@@ -48,11 +48,12 @@ const CONSTS = { Pi: Math.PI, ExponentialE: Math.E, Half: 0.5, GoldenRatio: (1 +
   PositiveInfinity: Infinity, NegativeInfinity: -Infinity, NaN: NaN, EulerGamma: 0.5772156649015329 };
 const NOT_VARIABLES = { ImaginaryUnit: 1, ComplexInfinity: 1, True: 1, False: 1, Nothing: 1, Undefined: 1, ContinuationPlaceholder: 1 };
 const isConst = (s) => Object.prototype.hasOwnProperty.call(CONSTS, s);
-const BINDERS = { Sum: 1, Product: 1, Integrate: 1 };
+const BINDERS = { Sum: 1, Product: 1, Integrate: 1, NumInt: 1 };
 const INTEGRAL_REACH = 10;            // infinite integration limits are cut here
 export const DEFAULT_TERMS = 20;
 
 function boundVar(j) {                 // variable bound by a Sum / Product / Integrate node
+  if (j[0] === 'NumInt') return typeof j[2] === 'string' ? j[2] : null;
   const lim = j[2];
   if (Array.isArray(lim) && typeof lim[1] === 'string') return lim[1];
   if (Array.isArray(j[1]) && j[1][0] === 'Function' && typeof j[1][2] === 'string') return j[1][2];
@@ -101,6 +102,39 @@ export function compileJson(j, ctx) {
       let s = 0;
       for (let k = 0; k <= n; k++) { e[v] = a + k * hstep; const y = body(e); s += (k === 0 || k === n ? 1 : k % 2 ? 4 : 2) * (isFinite(y) ? y : 0); }
       e[v] = save; return s * hstep / 3;
+    };
+  }
+  if (h === 'NumD') {                                // ["NumD", body, variable, order]: finite differences on the body itself
+    const f = compileJson(j[1], ctx), v = j[2], order = j[3] || 1;
+    const at = (e, x) => { e[v] = x; return f(e); };
+    return (e) => {
+      const x = e[v], s = Math.max(1, Math.abs(x)); let r;
+      if (order === 1) { const d = 1e-4 * s; r = (at(e, x + d) - at(e, x - d)) / (2 * d); }
+      else if (order === 2) { const d = 2e-3 * s; r = (at(e, x + d) - 2 * at(e, x) + at(e, x - d)) / (d * d); }
+      else if (order === 3) { const d = 1e-2 * s; r = (at(e, x + 2 * d) - 2 * at(e, x + d) + 2 * at(e, x - d) - at(e, x - 2 * d)) / (2 * d * d * d); }
+      else { const d = 3e-2 * s; r = (at(e, x + 2 * d) - 4 * at(e, x + d) + 6 * at(e, x) - 4 * at(e, x - d) + at(e, x - 2 * d)) / (d * d * d * d); }
+      e[v] = x; return r;
+    };
+  }
+  if (h === 'NumInt') {                              // ["NumInt", body, variable, from, to, steps]
+    const f = compileJson(j[1], ctx), v = j[2], lo = compileJson(j[3], ctx), hi = compileJson(j[4], ctx), n = j[5] || 160;
+    return (e) => {
+      let a = lo(e), b = hi(e);
+      if (Number.isNaN(a) || Number.isNaN(b)) return NaN;
+      a = Math.max(-INTEGRAL_REACH, Math.min(INTEGRAL_REACH, a)); b = Math.max(-INTEGRAL_REACH, Math.min(INTEGRAL_REACH, b));
+      const d = (b - a) / n, save = e[v]; let sum = 0;
+      for (let k = 0; k <= n; k++) { e[v] = a + k * d; const y = f(e); sum += (k === 0 || k === n ? 1 : k % 2 ? 4 : 2) * (isFinite(y) ? y : 0); }
+      e[v] = save; return sum * d / 3;
+    };
+  }
+  if (h === 'Taylor') {                              // ["Taylor", ["List", f, f', f'', ...], variable]
+    const ds = j[1].slice(1).map((c) => compileJson(c, ctx)), v = j[2];
+    return (e) => {
+      const x = e[v], a = e.__center || 0, n = Math.min(ds.length - 1, Math.max(0, Math.round(e.__order === undefined ? 3 : e.__order)));
+      e[v] = a;
+      let sum = 0, fact = 1;
+      for (let k = 0; k <= n; k++) { if (k > 1) fact *= k; sum += ds[k](e) / fact * Math.pow(x - a, k); }
+      e[v] = x; return sum;
     };
   }
   if (h === 'Function') return compileJson(j[1], ctx);
@@ -205,12 +239,18 @@ export function containsHead(j, heads) {
   for (let i = 1; i < j.length; i++) if (containsHead(j[i], heads)) return true;
   return false;
 }
-function mentions(j, sym) { return JSON.stringify(j).indexOf('"' + sym + '"') >= 0; }
+export function mentions(j, sym) { return JSON.stringify(j).indexOf('"' + sym + '"') >= 0; }
 /* Letters the engine reads as named constants; on Wikipedia they are almost always variables. */
 const DEMOTE = { GoldenRatio: 'varphi', EulerGamma: 'gamma' };
 function demote(j) {
   if (typeof j === 'string') return DEMOTE[j] || j;
   if (Array.isArray(j)) return [j[0]].concat(j.slice(1).map(demote));
+  return j;
+}
+/* Replace symbols by other expressions throughout a tree. */
+export function substitute(j, map) {
+  if (typeof j === 'string') return Object.prototype.hasOwnProperty.call(map, j) ? map[j] : j;
+  if (Array.isArray(j)) return [j[0]].concat(j.slice(1).map((c) => substitute(c, map)));
   return j;
 }
 export function collectSymbols(j, set, ctx, bound) {
@@ -257,7 +297,7 @@ function simpleRelation(j) {
   })(j);
   return simple;
 }
-function infiniteSum(j) {
+export function infiniteSum(j) {
   if (!Array.isArray(j)) return false;
   if ((j[0] === 'Sum' || j[0] === 'Product') && Array.isArray(j[2]) && (j[2][3] === 'PositiveInfinity' || mentions(j[2][3], 'PositiveInfinity'))) return true;
   for (let i = 1; i < j.length; i++) if (infiniteSum(j[i])) return true;
@@ -545,6 +585,8 @@ function fieldView(ce, m, rhsTex) {
     };
     comps = [pick(1, 0, 0), pick(0, 1, 0), pick(0, 0, 1)];
     comps.json = p.json;
+    const zero = substitute(p.json, { msI: 0, msJ: 0, msK: 0 });
+    comps.tree = [{ msI: 1, msJ: 0, msK: 0 }, { msI: 0, msJ: 1, msK: 0 }, { msI: 0, msJ: 0, msK: 1 }].map((u) => ['Subtract', substitute(p.json, u), zero]);
     comps.hasK = mentions(p.json, 'msK');
   } else {
     let inner = rhsTex.trim();
@@ -564,6 +606,7 @@ function fieldView(ce, m, rhsTex) {
     }
     comps = [fs[0], fs[1], fs[2] || (() => 0)];
     comps.json = ['List'].concat(jsons);
+    comps.tree = [jsons[0], jsons[1], jsons[2] === undefined ? 0 : jsons[2]];
     comps.hasK = fs.length === 3;
   }
   const names = ['x', 'y', 'z'];
@@ -583,7 +626,7 @@ function fieldView(ce, m, rhsTex) {
     if (unknownSet.has(coords[2] || 'z')) is3d = true;
   }
   if (is3d && coords.length < 3) coords.push('z');
-  return { kind: is3d ? 'field3d' : 'field2d', comps, coords: is3d ? coords.slice(0, 3) : coords.slice(0, 2), unknowns,
+  return { kind: is3d ? 'field3d' : 'field2d', comps, compJson: comps.tree, coords: is3d ? coords.slice(0, 3) : coords.slice(0, 2), unknowns,
     params: unknowns.filter((u) => coords.indexOf(u) < 0), json: comps.json, lhsLatex: m[1].trim(), ctx };
 }
 
@@ -696,8 +739,9 @@ const GREEK = { alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε'
   phi: 'φ', varphi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ',
   Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω' };
 const SUBS = { 0: '₀', 1: '₁', 2: '₂', 3: '₃', 4: '₄', 5: '₅', 6: '₆', 7: '₇', 8: '₈', 9: '₉' };
+const SPECIAL = { __terms: 'terms', __order: 'order', __center: 'centre' };
 export function plainSym(s) {
-  if (s === '__terms') return 'terms';
+  if (SPECIAL[s]) return SPECIAL[s];
   const parts = s.split('_');
   const base = GREEK[parts[0]] || parts[0];
   if (parts.length < 2) return base;
@@ -705,7 +749,7 @@ export function plainSym(s) {
   return base + (SUBS[sub] !== undefined ? SUBS[sub] : '_' + sub);
 }
 export function symLatex(s) {
-  if (s === '__terms') return '\\text{terms}';
+  if (SPECIAL[s]) return '\\text{' + SPECIAL[s] + '}';
   const parts = s.split('_');
   const base = GREEK[parts[0]] ? '\\' + parts[0] : (parts[0].length > 1 ? '\\mathrm{' + parts[0] + '}' : parts[0]);
   return parts.length < 2 ? base : base + '_{' + parts.slice(1).map((p) => (GREEK[p] ? '\\' + p : p)).join('') + '}';

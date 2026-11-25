@@ -1,4 +1,4 @@
-# MathScope 0.4
+# MathScope 0.5
 
 A Chrome extension that makes equations on the web interactive. It marks every
 formula it can draw. Click one to get a plot with sliders for its symbols:
@@ -54,6 +54,31 @@ Press Esc or **Close** to dismiss it.
 
 Every symbol that is not on an axis becomes a slider.
 
+## Operators
+
+Under each plot is a row of operators. Each takes what is on screen and turns it
+into something new, which you can then operate on again. A trail at the top shows
+the steps; click an earlier step to go back. Sliders keep their values across steps.
+
+| On | Operator | Result |
+| --- | --- | --- |
+| Curve | Derivative | Curve |
+| Curve | Integral (from 0 up to each point) | Curve |
+| Curve | Fourier spectrum (strength of each frequency) | Curve |
+| Curve | Taylor approximation, with sliders for order and centre | Curve, drawn over the original |
+| Surface | Gradient | Field |
+| Surface | Laplacian | Surface |
+| Field | Divergence | Surface |
+| Field | Curl | Surface in 2D, field in 3D |
+
+So `surface → Gradient → Divergence` gives the same picture as `surface → Laplacian`,
+and `field → Curl → Divergence` is zero everywhere.
+
+Derivatives are worked out symbolically when the formula allows it, and the result
+is shown as a formula. Otherwise they are estimated numerically, up to the fourth
+derivative. Each curve also shows three whole-curve numbers: its area, its average
+and its smoothness energy (half the integral of the squared slope).
+
 It also understands:
 
 - Several definitions in one formula (rows of an aligned block, or separated by commas).
@@ -77,6 +102,7 @@ Explicit functions like `f(x) = ax + b` are always marked.
 | `page-mathjax.js` | Runs in the page's own script world on MathJax 3+ sites, where the TeX source lives in memory. Copies it onto each formula as an attribute. |
 | `background.js` | Runs MathScope on the current tab when the toolbar button is clicked. |
 | `math.js` | Splits and classifies formulas, and evaluates them by walking the parsed tree. No generated code, as Manifest V3 requires. |
+| `ops.js` | The operators. Each maps one drawable object to another, so they chain. |
 | `plots.js` | Draws curves and maps on a plain canvas, plus a simple 3D fallback. |
 | `plots3d.js` | The 3D views (surfaces, 3D fields, space curves, shapes), drawn with Three.js. Rotate by dragging, zoom by scrolling. |
 | `panel.html`, `panel.js`, `panel.css` | The panel: controls, sliders and readouts. |
@@ -101,6 +127,8 @@ itself is not changed.
 - The same letter can mean different things in different sections of an article.
   A cross-reference always uses the first definition on the page, which is
   sometimes the wrong one.
+- The Fourier spectrum uses the function between −10 and 10 only, so a wave that
+  never dies away shows broad peaks, not sharp spikes.
 - Integrals to infinity are cut off at ±10, and infinite sums are truncated, so
   both are approximations. A truncated series goes wrong far from its centre.
 - Slider ranges are fixed at −5 to 5 and starting values are guesses.

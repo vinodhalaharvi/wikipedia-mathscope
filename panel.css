@@ -123,3 +123,18 @@ pre {
 #ms-canvas3d { cursor: grab; }
 #ms-canvas3d:active { cursor: grabbing; }
 .plot canvas[hidden] { display: none; }
+
+/* v0.5: operators */
+.trail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 13px; }
+.trail[hidden] { display: none; }
+.trail .arrow { color: var(--muted); }
+.crumb { font: inherit; font-size: 13px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--accent); cursor: pointer; }
+.crumb.here { border-color: transparent; background: var(--accent-soft); color: var(--accent); font-weight: 600; cursor: default; }
+button.crumb:hover { background: var(--bg); }
+.ops { display: flex; flex-wrap: wrap; gap: 6px; }
+.op { font: inherit; font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--accent); background: var(--surface); color: var(--accent); cursor: pointer; }
+.op:hover { background: var(--accent-soft); }
+.numbers { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.numbers b { color: var(--ink); font-weight: 500; }
+.numbers[hidden] { display: none; }
+.swatch.r { border-top: 2px dotted var(--muted); }

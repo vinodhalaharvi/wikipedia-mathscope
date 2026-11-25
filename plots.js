@@ -36,7 +36,12 @@ export function drawCurve(canvas, wrap, opts) {
   let lo = 0, hi = 0, any = false;
   const all = [];
   opts.series.forEach((se, k) => { for (const v of se.ys) if (isFinite(v) && Math.abs(v) < LIM) { any = true; if (k === 0) all.push(v); if (v < lo) lo = v; if (v > hi) hi = v; } });
-  if (all.length > 20) {                           // a few runaway values should not flatten everything else
+  if (opts.frame) {                                // frame the picture on one reference curve
+    let a = 0, b = 0;
+    for (const v of opts.frame) if (isFinite(v) && Math.abs(v) < LIM) { if (v < a) a = v; if (v > b) b = v; }
+    const band = (b - a) || 1;
+    lo = Math.max(lo, a - band * 0.75); hi = Math.min(hi, b + band * 0.75);
+  } else if (all.length > 20) {                    // a few runaway values should not flatten everything else
     all.sort((p, q) => p - q);
     const q = (t) => all[Math.min(all.length - 1, Math.floor(t * all.length))];
     const a = Math.min(0, q(0.04)), b = Math.max(0, q(0.96)), band = (b - a) || 1;
@@ -133,6 +138,9 @@ export function drawMap(canvas, wrap, opts) {
     }
   }
   const finite = lo <= hi;
+  let constant;
+  if (finite && opts.noise && Math.max(Math.abs(lo), Math.abs(hi)) < opts.noise) { for (let i = 0; i < g.length; i++) if (isFinite(g[i])) g[i] = 0; lo = 0; hi = 0; }
+  if (finite && hi - lo <= 1e-9 * Math.max(1, Math.abs(lo), Math.abs(hi))) constant = (lo + hi) / 2;
   if (opts.diverging && finite) { const a = Math.max(Math.abs(lo), Math.abs(hi)) || 1; lo = -a; hi = a; }
   if (finite && lo === hi) { lo -= 0.5; hi += 0.5; }
   ctx.fillStyle = cssVar('--bg'); ctx.fillRect(m.l, m.t, side, side);
@@ -195,7 +203,7 @@ export function drawMap(canvas, wrap, opts) {
     ctx.strokeStyle = cInk; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(hx - 7, hy); ctx.lineTo(hx + 7, hy); ctx.moveTo(hx, hy - 7); ctx.lineTo(hx, hy + 7); ctx.stroke();
   }
   ctx.strokeStyle = cGrid; ctx.lineWidth = 1; ctx.strokeRect(m.l + 0.5, m.t + 0.5, side, side);
-  return { lo, hi, toData(clientX, clientY) {
+  return { lo, hi, constant, toData(clientX, clientY) {
     const r = canvas.getBoundingClientRect(), tx = (clientX - r.left - m.l) / side, ty = 1 - (clientY - r.top - m.t) / side;
     if (tx < 0 || tx > 1 || ty < 0 || ty > 1) return null;
     return [Math.round((-R + tx * 2 * R) * 100) / 100, Math.round((-R + ty * 2 * R) * 100) / 100];

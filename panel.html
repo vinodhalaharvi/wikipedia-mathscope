@@ -14,6 +14,7 @@
     <span class="adapter" id="ms-status"></span>
     <button type="button" class="close" id="ms-close" aria-label="Close MathScope">Close</button>
   </div>
+  <nav class="trail" id="ms-trail" aria-label="Operators applied" hidden></nav>
   <div class="eq-render" id="ms-eq-render"></div>
   <fieldset class="group" id="ms-views-group" hidden>
     <legend>In this formula</legend>
@@ -35,6 +36,14 @@
       <div class="legend" id="ms-legend"></div>
       <p class="readout" id="ms-readout"></p>
       <div class="plot" id="ms-plot"><canvas id="ms-canvas" role="img" aria-label="Plot of the selected equation"></canvas><canvas id="ms-canvas3d" role="img" aria-label="Three-dimensional view" hidden></canvas></div>
+    </div>
+
+    <p class="numbers" id="ms-numbers" hidden></p>
+
+    <div class="group" id="ms-ops-group">
+      <span class="label">Apply an operator</span>
+      <div class="ops" id="ms-ops"></div>
+      <p class="small" id="ms-op-note"></p>
     </div>
 
     <div class="deriv" id="ms-deriv-box">
