@@ -235,6 +235,28 @@ function sumOverIndexed(j) {
   for (let i = 1; i < j.length; i++) if (sumOverIndexed(j[i])) return true;
   return false;
 }
+/* "x = mu - sigma", "X = sigma Z + mu", "FWHM = 2.35 c": a name set equal to plain
+   arithmetic where every symbol appears once. True, but a straight line or a simple
+   reciprocal is not worth a pill. Anything with a power, a root, a function, or a
+   symbol used twice (a polynomial, say) is kept. */
+function simpleRelation(j) {
+  const used = new Set(); let simple = true;
+  (function walk(n) {
+    if (!simple || typeof n === 'number') return;
+    if (typeof n === 'string') {
+      if (isConst(n) || /^[+-]?(\d|\.\d)/.test(n)) return;
+      if (used.has(n)) simple = false;
+      used.add(n); return;
+    }
+    if (!Array.isArray(n)) return;
+    if (collectSymbols(n, new Set()).size === 0) return;            // a constant such as sqrt(2 pi)
+    const h = n[0];
+    if (h === 'Add' || h === 'Multiply' || h === 'Negate' || h === 'Subtract' || h === 'Divide' || h === 'Rational' || h === 'Delimiter') { for (let i = 1; i < n.length; i++) walk(n[i]); return; }
+    if (h === 'Power' && n[2] === -1) { walk(n[1]); return; }
+    simple = false;
+  })(j);
+  return simple;
+}
 function infiniteSum(j) {
   if (!Array.isArray(j)) return false;
   if ((j[0] === 'Sum' || j[0] === 'Product') && Array.isArray(j[2]) && (j[2][3] === 'PositiveInfinity' || mentions(j[2][3], 'PositiveInfinity'))) return true;
@@ -497,6 +519,7 @@ function scalarView(ce, lhs, rhsTex, table) {
   if (!lhs.declared.length && !complex && unknowns.indexOf('x') >= 0 && unknowns.indexOf('y') >= 0 && lhs.lhsSym !== 'x' && lhs.lhsSym !== 'y') {
     return Object.assign(base, { kind: 'surface', xVar: 'x', yVar: 'y' });
   }
+  if (!lhs.declared.length && !complex && simpleRelation(json)) return none('This is a simple relation between symbols, so it is not marked', base);
   const usual = AXIS_ORDER.filter((n) => unknowns.indexOf(n) >= 0)[0];
   const variable = declaredFree.length ? declaredFree[0] : (usual || unknowns[0]);
   return Object.assign(base, { kind: complex ? 'complex' : 'curve', variable });

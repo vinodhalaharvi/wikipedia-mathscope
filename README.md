@@ -64,8 +64,10 @@ It also understands:
   article also defines Φ.
 
 It skips: limits, derivatives and differential equations, matrices, sums over
-indexed data such as `Σ xᵢ`, and inline formulas that Wikipedia writes as plain
-text instead of TeX.
+indexed data such as `Σ xᵢ`, and inline formulas written as plain text instead
+of TeX. It also leaves simple relations unmarked, such as `x = μ − σ` or
+`X = σZ + μ`: a name set equal to plain arithmetic where each symbol appears once.
+Explicit functions like `f(x) = ax + b` are always marked.
 
 ## How it works
 
