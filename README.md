@@ -8,6 +8,8 @@ symbols, and a symbolic derivative.
 
 *Recorded on a sample article that uses Wikipedia's formula markup.*
 
+[Watch the 30-second demo video with sound](docs/mathscope-demo.mp4) (opens GitHub's video player).
+
 ## Install (desktop Chrome, Edge or Brave)
 
 1. Download this repository: **Code > Download ZIP** on GitHub, then unzip it
