@@ -58,24 +58,28 @@ window.addEventListener('message', (ev) => {
   if (ev.source !== window.parent) return;
   const msg = ev.data;
   if (!msg || msg.mathscope !== true) return;
-  if (msg.type === 'classify') classifyAll(msg.items || []);
+  if (msg.type === 'classify') classifyAll(msg.items || [], typeof msg.site === 'string' ? msg.site : '');
   else if (msg.type === 'select') select(msg.id);
 });
 $('#ms-close').addEventListener('click', () => send({ type: 'close' }));
 
-function classifyAll(list) {
-  /* One synchronous pass, no timers: Chrome slows timers in an iframe that is not visible. */
-  const partsAll = list.map((it) => { try { return splitParts(String(it.tex)); } catch (err) { return []; } });
+const partsById = new Map();              // every formula seen so far, for cross-references
+let siteName = '';
+function classifyAll(list, site) {
+  /* One synchronous pass, no timers: Chrome slows timers in an iframe that is not visible.
+     Pages that keep growing (AI chats) send further batches; each adds to what is known. */
+  if (site) siteName = site;
+  list.forEach((it) => { let parts = []; try { parts = splitParts(String(it.tex)); } catch (err) { parts = []; } partsById.set(it.id, parts); });
   let table = null;
-  try { table = buildFunctionTable(engine, partsAll); } catch (err) { table = null; }
+  try { table = buildFunctionTable(engine, Array.from(partsById.values())); } catch (err) { table = null; }
   const plottable = [];
-  list.forEach((it, i) => {
+  list.forEach((it) => {
     let analysis = { views: [], parts: [] };
-    try { analysis = analyseFormula(engine, String(it.tex), table, partsAll[i]); } catch (err) { /* leave empty */ }
+    try { analysis = analyseFormula(engine, String(it.tex), table, partsById.get(it.id)); } catch (err) { /* leave empty */ }
     items.set(it.id, { id: it.id, tex: String(it.tex), raw: String(it.raw || it.tex), analysis });
     if (analysis.views.length) plottable.push({ id: it.id, label: KIND_LABEL[analysis.views[0].kind] || 'Plot' });
   });
-  $('#ms-status').textContent = 'Wikipedia · ' + plottable.length + ' of ' + list.length + ' equations can plot';
+  $('#ms-status').textContent = siteName;
   send({ type: 'classified', plottable });
 }
 
@@ -366,7 +370,7 @@ function fillTable() {
 function showIR() {
   const v = st.view, p = {};
   paramNames().forEach((u) => { p[plainSym(u)] = st.params[u]; });
-  $('#ms-ir').textContent = JSON.stringify({ kind: v.kind, axes: st.axes.map(plainSym), parameters: p, source: 'wikipedia' }, null, 1);
+  $('#ms-ir').textContent = JSON.stringify({ kind: v.kind, axes: st.axes.map(plainSym), parameters: p, source: siteName || 'page' }, null, 1);
 }
 
 /* ------------------------------------------------------------------ pointer readouts */

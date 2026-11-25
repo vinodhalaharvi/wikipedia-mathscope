@@ -1,20 +1,38 @@
 {
   "manifest_version": 3,
   "name": "MathScope",
-  "version": "0.3.0",
-  "description": "Plot equations on Wikipedia: curves, surfaces, vector fields and 3D shapes, with sliders.",
+  "version": "0.4.0",
+  "description": "Plot equations on Wikipedia, arXiv, Stack Exchange and AI chats: curves, surfaces, vector fields and 3D shapes, with sliders.",
+  "minimum_chrome_version": "111",
+  "permissions": ["activeTab", "scripting"],
+  "action": { "default_title": "Run MathScope on this page" },
+  "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
-      "matches": ["https://*.wikipedia.org/*"],
+      "matches": [
+        "https://*.wikipedia.org/*", "https://*.wikibooks.org/*", "https://*.wikiversity.org/*",
+        "https://arxiv.org/*", "https://*.arxiv.org/*",
+        "https://*.stackexchange.com/*", "https://mathoverflow.net/*",
+        "https://chatgpt.com/*", "https://claude.ai/*"
+      ],
       "js": ["content.js"],
       "css": ["content.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://arxiv.org/*", "https://*.arxiv.org/*",
+        "https://*.stackexchange.com/*", "https://mathoverflow.net/*"
+      ],
+      "js": ["page-mathjax.js"],
+      "world": "MAIN",
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
       "resources": ["panel.html"],
-      "matches": ["https://*.wikipedia.org/*"]
+      "matches": ["<all_urls>"]
     }
   ]
 }

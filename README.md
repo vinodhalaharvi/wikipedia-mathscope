@@ -1,8 +1,22 @@
-# MathScope 0.3
+# MathScope 0.4
 
-A Chrome extension that makes equations on Wikipedia interactive. It marks every
+A Chrome extension that makes equations on the web interactive. It marks every
 formula it can draw. Click one to get a plot with sliders for its symbols:
 curves, surfaces, vector fields and 3D shapes.
+
+## Where it works
+
+| Site | How |
+| --- | --- |
+| Wikipedia, Wikibooks, Wikiversity | Automatic |
+| arXiv HTML papers (`arxiv.org/html/…`) | Automatic |
+| Stack Exchange sites and MathOverflow | Automatic |
+| ChatGPT and Claude | Automatic, and it keeps up as new answers arrive |
+| Any other page that renders math with KaTeX, MathJax or MathML | Click the MathScope toolbar button on that page |
+
+It reads the TeX source that each renderer leaves in the page, so it works per
+rendering technology, not per website. Pages that show math as images, plain
+text or PDF have no source to read and are not supported.
 
 ![MathScope opening an equation, moving its sliders and reading the plot](docs/demo.gif)
 
@@ -19,6 +33,8 @@ curves, surfaces, vector fields and 3D shapes.
 4. Click **Load unpacked** and choose the folder that contains `manifest.json`.
 5. Open a Wikipedia article with formulas, for example
    `https://en.wikipedia.org/wiki/Gaussian_function`, and reload it.
+6. Optional: pin MathScope from the puzzle-piece menu, so its button is one click away
+   on sites outside the automatic list.
 
 A badge at the bottom left reports how many equations can plot. Each of those gets a
 blue "Plot" pill and a
@@ -55,7 +71,9 @@ text instead of TeX.
 
 | File | Role |
 | --- | --- |
-| `content.js`, `content.css` | Runs on the page. Reads each formula's TeX source, marks the drawable ones, hosts the panel iframe. |
+| `content.js`, `content.css` | Runs on the page. One adapter per renderer (Wikipedia, KaTeX, MathJax 2, MathJax 3+, MathML) reads each formula's TeX source. Marks the drawable ones and hosts the panel iframe. |
+| `page-mathjax.js` | Runs in the page's own script world on MathJax 3+ sites, where the TeX source lives in memory. Copies it onto each formula as an attribute. |
+| `background.js` | Runs MathScope on the current tab when the toolbar button is clicked. |
 | `math.js` | Splits and classifies formulas, and evaluates them by walking the parsed tree. No generated code, as Manifest V3 requires. |
 | `plots.js` | Draws curves and maps on a plain canvas, plus a simple 3D fallback. |
 | `plots3d.js` | The 3D views (surfaces, 3D fields, space curves, shapes), drawn with Three.js. Rotate by dragging, zoom by scrolling. |
@@ -64,14 +82,20 @@ text instead of TeX.
 | `vendor/katex` | KaTeX 0.19.1 (MIT). Typesets formulas in the panel. |
 | `vendor/three` | Three.js 0.187.0 (MIT), bundled down to the parts used. Rebuild with `esbuild vendor/three/entry.js --bundle --format=esm --minify` after `npm install three`. |
 
-The extension requests no permissions, makes no network requests, and only
-runs on `*.wikipedia.org`. Nothing on Wikipedia itself is changed.
+Permissions: the extension runs automatically only on the sites listed above.
+Everywhere else it does nothing until you click its button, which grants access
+to that one tab (`activeTab`). It makes no network requests and sends nothing
+anywhere. The page you see gains pills, outlines and a side panel; the site
+itself is not changed.
 
 ## Known limits
 
-- The adapter was checked against live Wikipedia articles in November 2026. If
-  Wikipedia changes its formula markup again and nothing is marked, look at
-  `texOf` in `content.js`.
+- Checked against live pages in November 2026: Wikipedia and arXiv HTML. The
+  KaTeX and MathJax adapters were tested with the real libraries on local pages,
+  but not on ChatGPT, Claude or Stack Exchange themselves. If a site changes its
+  markup and nothing is marked, look at the adapters in `content.js`.
+- On AI chats the pill is drawn with CSS and nothing is inserted into the page,
+  so the chat app's own rendering is left alone.
 - The same letter can mean different things in different sections of an article.
   A cross-reference always uses the first definition on the page, which is
   sometimes the wrong one.

@@ -250,10 +250,7 @@ function usesFnsDeep(j, ctx, seen) {
 
 /* ------------------------------------------------------------------ TeX utilities */
 export function cleanTex(tex) {
-  let t = String(tex).trim();
-  const m = /^\{\\(?:displaystyle|textstyle|scriptstyle)\s*([\s\S]*)\}$/.exec(t);
-  if (m) t = m[1].trim();
-  t = t.replace(/^\\(?:displaystyle|textstyle|scriptstyle)\s*/, '');
+  let t = String(tex).replace(/\\(?:displaystyle|textstyle|scriptstyle)\b\s*/g, '').trim();
   let prev;
   do {
     prev = t;
@@ -327,7 +324,7 @@ const NON_SCALAR = /\\(?:mathbf|boldsymbol|bold|mathsf|mathbb|mathcal|vec|hat|na
 
 /* Unit vectors in their many spellings -> placeholder symbols. */
 const UNIT = [['msI', String.raw`(?:\\imath|i|x)`, 'i', '(?:x|1)'], ['msJ', String.raw`(?:\\jmath|j|y)`, 'j', '(?:y|2)'], ['msK', '(?:k|z)', 'k', '(?:z|3)']];
-const BOLD = String.raw`\\(?:boldsymbol|mathbf|bold|vec)`;
+const BOLD = String.raw`\\(?:boldsymbol|mathbf|bold|bm|vec)`;
 function unitVectors(tex) {
   let t = tex;
   for (const [sym, hatLetter, boldLetter, sub] of UNIT) {

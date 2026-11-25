@@ -1,4 +1,4 @@
-/* MathScope: styles added to the Wikipedia page itself. Kept deliberately small. */
+/* MathScope: styles added to the page itself. Kept deliberately small. */
 .mathscope-eq {
   outline: 1px dashed #3366cc;
   outline-offset: 4px;
@@ -78,5 +78,25 @@
   border: 0;
 }
 @media (min-width: 1100px) {
-  html.mathscope-open { margin-right: 420px; }
+  html.mathscope-wiki.mathscope-open { margin-right: 420px; }
 }
+
+/* Pill drawn as a pseudo-element: nothing is inserted into the page's own DOM,
+   which keeps apps that re-render their nodes (AI chats) undisturbed. */
+.mathscope-pseudo[data-mathscope-label]::before {
+  content: attr(data-mathscope-label);
+  display: inline-block;
+  margin: 0 6px 0 0;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font: 600 11px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0;
+  white-space: nowrap;
+  color: #fff;
+  background: #3366cc;
+  vertical-align: middle;
+  position: static;
+  width: auto; height: auto;
+}
+.mathscope-pseudo.mathscope-selected[data-mathscope-label]::before { background: #14866d; }
+.mathscope-pseudo:focus-visible { outline: 2px solid #2a4b8d; outline-offset: 4px; }
