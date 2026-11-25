@@ -4,6 +4,10 @@ A Chrome extension that makes equations on Wikipedia interactive. It outlines
 every formula it can plot. Click one to get a plot, sliders for the other
 symbols, and a symbolic derivative.
 
+![MathScope opening an equation, moving its sliders and reading the plot](docs/demo.gif)
+
+*Recorded on a sample article that uses Wikipedia's formula markup.*
+
 ## Install (desktop Chrome, Edge or Brave)
 
 1. Download this repository: **Code > Download ZIP** on GitHub, then unzip it
