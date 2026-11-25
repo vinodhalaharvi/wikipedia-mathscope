@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "MathScope",
+  "version": "0.1.0",
+  "description": "Plot equations on Wikipedia with sliders and symbolic derivatives.",
+  "content_scripts": [
+    {
+      "matches": ["https://*.wikipedia.org/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.html"],
+      "matches": ["https://*.wikipedia.org/*"]
+    }
+  ]
+}
