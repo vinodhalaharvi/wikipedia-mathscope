@@ -89,7 +89,7 @@ label.legend-item { cursor: pointer; }
 .readout { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.5em; margin: 0; }
 .readout b { color: var(--ink); font-weight: 500; }
 .plot { position: relative; width: 100%; touch-action: pan-y; }
-.plot canvas { display: block; width: 100%; height: 230px; }
+.plot canvas { display: block; width: 100%; height: 230px; touch-action: none; }
 .deriv { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-x: auto; }
 .deriv .cap { font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px; }
 details { border-top: 1px solid var(--line); padding-top: 10px; min-width: 0; }
@@ -106,3 +106,17 @@ pre {
   white-space: pre-wrap; word-break: break-word;
 }
 .tex-fallback { font-family: var(--font-mono); font-size: 13px; }
+
+/* v0.2 additions */
+.stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.stack:empty { display: none; }
+.controls { align-items: flex-start; }
+.controls > fieldset { flex: 0 1 auto; }
+.deriv[hidden], details[hidden], .group[hidden], fieldset[hidden] { display: none; }
+.deriv { font-size: 13.5px; }
+.legend-item { color: var(--muted); }
+.legend .swatch + *, .legend-item:has(.swatch) { color: var(--ink); }
+.katex { font-size: 1.08em; }
+.katex-display { margin: 0.2em 0; }
+.chip .katex, .param .katex { font-size: 1em; }
+.eq-render, .deriv { overflow-x: auto; overflow-y: hidden; }

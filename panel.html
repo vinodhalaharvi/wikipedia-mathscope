@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MathScope</title>
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
 <link rel="stylesheet" href="panel.css">
 </head>
 <body>
@@ -14,43 +15,34 @@
     <button type="button" class="close" id="ms-close" aria-label="Close MathScope">Close</button>
   </div>
   <div class="eq-render" id="ms-eq-render"></div>
+  <fieldset class="group" id="ms-views-group" hidden>
+    <legend>In this formula</legend>
+    <div class="chips" id="ms-views"></div>
+  </fieldset>
   <p class="msg" id="ms-msg">Click an outlined equation on the page.</p>
 
   <div class="work" id="ms-work" hidden>
-    <fieldset class="group">
-      <legend>Horizontal axis</legend>
-      <div class="chips" id="ms-vars"></div>
-    </fieldset>
+    <div class="stack" id="ms-axes"></div>
 
-    <div class="group">
+    <div class="group" id="ms-params-group">
       <span class="label">Parameters</span>
       <div class="params" id="ms-params"></div>
       <p class="small" id="ms-params-note"></p>
     </div>
 
     <div class="group">
-      <div class="controls">
-        <span class="lab" id="ms-range-lab">Range</span>
-        <div class="chips" role="radiogroup" aria-labelledby="ms-range-lab">
-          <label class="chip seg"><input type="radio" name="ms-range" id="ms-range-3" value="3"><span>±3</span></label>
-          <label class="chip seg"><input type="radio" name="ms-range" id="ms-range-6" value="6" checked><span>±6</span></label>
-          <label class="chip seg"><input type="radio" name="ms-range" id="ms-range-12" value="12"><span>±12</span></label>
-        </div>
-      </div>
-      <div class="legend">
-        <span class="legend-item"><span class="swatch"></span>Function</span>
-        <label for="ms-show-d" class="legend-item"><input type="checkbox" id="ms-show-d" checked><span class="swatch d"></span>Derivative</label>
-      </div>
-      <p class="readout" id="ms-readout">Hover the plot to read values.</p>
-      <div class="plot" id="ms-plot"><canvas id="ms-canvas" role="img" aria-label="Plot of the selected function"></canvas></div>
+      <div class="controls" id="ms-options"></div>
+      <div class="legend" id="ms-legend"></div>
+      <p class="readout" id="ms-readout"></p>
+      <div class="plot" id="ms-plot"><canvas id="ms-canvas" role="img" aria-label="Plot of the selected equation"></canvas></div>
     </div>
 
-    <div class="deriv">
-      <span class="cap">Derivative, computed symbolically</span>
+    <div class="deriv" id="ms-deriv-box">
+      <span class="cap" id="ms-deriv-cap">Derivative</span>
       <div id="ms-deriv"></div>
     </div>
 
-    <details>
+    <details id="ms-table-box">
       <summary>Values table</summary>
       <div class="tablewrap"><table id="ms-table"></table></div>
     </details>
@@ -61,7 +53,7 @@
     <div class="kv">
       <div><span class="k">TeX source, read from the page</span><pre id="ms-src"></pre></div>
       <div><span class="k">Parsed expression (MathJSON)</span><pre id="ms-json"></pre></div>
-      <div><span class="k">Semantic layer (roles you confirmed)</span><pre id="ms-ir"></pre></div>
+      <div><span class="k">What is being drawn</span><pre id="ms-ir"></pre></div>
     </div>
   </details>
 </section>

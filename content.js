@@ -130,7 +130,7 @@
     document.documentElement.classList.remove('mathscope-open');
     if (selected) { selected.mark.classList.remove('mathscope-selected'); if (selected.pill) selected.pill.classList.remove('mathscope-pill-on'); selected = null; }
   }
-  function decorate(eq) {
+  function decorate(eq, label) {
     eq.mark.dataset.mathscopeId = String(eq.id);
     eq.mark.classList.add(eq.mode === 'sibling' ? 'mathscope-src' : 'mathscope-eq');
     if (eq.mode === 'direct') eq.mark.setAttribute('title', 'Plot with MathScope');
@@ -144,7 +144,7 @@
     const pill = document.createElement('button');
     pill.type = 'button';
     pill.className = 'mathscope-pill' + (block ? ' mathscope-pill-block' : '');
-    pill.textContent = 'Plot';
+    pill.textContent = label || 'Plot';
     pill.dataset.mathscopeId = String(eq.id);
     pill.setAttribute('aria-label', 'Plot this equation with MathScope');
     eq.mark.parentNode.insertBefore(pill, eq.mark);
@@ -172,7 +172,7 @@
     if (msg.type === 'ready') {
       post({ type: 'classify', page: document.title, items: equations.map((e) => ({ id: e.id, tex: e.tex, raw: e.raw })) });
     } else if (msg.type === 'classified') {
-      msg.plottable.forEach((id) => { try { if (equations[id]) decorate(equations[id]); } catch (err) { /* keep going */ } });
+      msg.plottable.forEach((p) => { try { if (equations[p.id]) decorate(equations[p.id], p.label); } catch (err) { /* keep going */ } });
       clearTimeout(giveUp);
       badge.textContent = 'MathScope: ' + msg.plottable.length + ' of ' + equations.length + ' equations can plot';
       badge.classList.toggle('mathscope-none', msg.plottable.length === 0);

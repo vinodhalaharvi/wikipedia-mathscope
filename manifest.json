@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MathScope",
-  "version": "0.1.0",
-  "description": "Plot equations on Wikipedia with sliders and symbolic derivatives.",
+  "version": "0.2.0",
+  "description": "Plot equations on Wikipedia: curves, surfaces, vector fields and 3D shapes, with sliders.",
   "content_scripts": [
     {
       "matches": ["https://*.wikipedia.org/*"],

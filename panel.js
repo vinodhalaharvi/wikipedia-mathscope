@@ -1,193 +1,21 @@
-/* MathScope panel.
-   An extension page shown in an iframe beside the article. The math engine lives
-   here, under the extension's own content security policy (no eval, no
-   new Function), so plotting uses a small tree evaluator instead of the
-   engine's compile(). */
+/* MathScope panel controller.
+   An extension page shown in an iframe beside the article. It receives the
+   page's formulas from the content script, decides what each one can show,
+   and drives the controls and the drawing. */
 import { ComputeEngine } from './vendor/compute-engine/compute-engine.js';
+import { splitParts, buildFunctionTable, analyseFormula, compileJson, compileComplex, scoped, defaultValue, locationLike,
+  plainSym, symLatex, fmt, KIND_LABEL, DEFAULT_TERMS } from './math.js';
+import { cssVar, drawCurve, drawMap, drawPath, View3D, surfaceScene, parametricSurfaceScene, spaceCurveScene, fieldScene } from './plots.js';
 
 const $ = (s, r) => (r || document).querySelector(s);
 const PARENT_ORIGIN = (location.ancestorOrigins && location.ancestorOrigins[0]) || '*';
 function send(msg) { window.parent.postMessage(Object.assign({ mathscope: true }, msg), PARENT_ORIGIN); }
 
-/* ---- Tree evaluator: MathJSON -> closure(env) -> number ---- */
-const CONSTS = { Pi: Math.PI, ExponentialE: Math.E, Half: 0.5, GoldenRatio: (1 + Math.sqrt(5)) / 2,
-  PositiveInfinity: Infinity, NegativeInfinity: -Infinity, NaN: NaN };
-export function compileJson(j) {
-  if (typeof j === 'number') return () => j;
-  if (typeof j === 'string') {
-    if (Object.prototype.hasOwnProperty.call(CONSTS, j)) { const c = CONSTS[j]; return () => c; }
-    if (/^[+-]?(\d|\.\d|Infinity)/.test(j)) { const n = parseFloat(j); return () => n; }
-    return (env) => env[j];
-  }
-  if (!Array.isArray(j)) {
-    if (j && j.num !== undefined) { const v = parseFloat(j.num); return () => v; }
-    if (j && j.sym !== undefined) return compileJson(j.sym);
-    if (j && j.fn !== undefined) return compileJson(j.fn);
-    throw new Error('Unsupported node');
-  }
-  const h = j[0];
-  const a = j.slice(1).map(compileJson);
-  const a0 = a[0], a1 = a[1];
-  switch (h) {
-    case 'Add': return (e) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i](e); return s; };
-    case 'Multiply': return (e) => { let p = 1; for (let i = 0; i < a.length; i++) p *= a[i](e); return p; };
-    case 'Subtract': return (e) => a0(e) - a1(e);
-    case 'Negate': return (e) => -a0(e);
-    case 'Divide': case 'Rational': return (e) => a0(e) / a1(e);
-    case 'Power': return (e) => Math.pow(a0(e), a1(e));
-    case 'Square': return (e) => { const x = a0(e); return x * x; };
-    case 'Sqrt': return (e) => Math.sqrt(a0(e));
-    case 'Root': return (e) => Math.pow(a0(e), 1 / a1(e));
-    case 'Exp': return (e) => Math.exp(a0(e));
-    case 'Ln': return (e) => Math.log(a0(e));
-    case 'Lb': return (e) => Math.log2(a0(e));
-    case 'Log': return a1 ? (e) => Math.log(a0(e)) / Math.log(a1(e)) : (e) => Math.log10(a0(e));
-    case 'Abs': return (e) => Math.abs(a0(e));
-    case 'Sin': return (e) => Math.sin(a0(e));
-    case 'Cos': return (e) => Math.cos(a0(e));
-    case 'Tan': return (e) => Math.tan(a0(e));
-    case 'Cot': return (e) => 1 / Math.tan(a0(e));
-    case 'Sec': return (e) => 1 / Math.cos(a0(e));
-    case 'Csc': return (e) => 1 / Math.sin(a0(e));
-    case 'Arcsin': return (e) => Math.asin(a0(e));
-    case 'Arccos': return (e) => Math.acos(a0(e));
-    case 'Arctan': return (e) => Math.atan(a0(e));
-    case 'Sinh': return (e) => Math.sinh(a0(e));
-    case 'Cosh': return (e) => Math.cosh(a0(e));
-    case 'Tanh': return (e) => Math.tanh(a0(e));
-    case 'Sign': return (e) => Math.sign(a0(e));
-    case 'Delimiter': case 'Annotated': case 'Hold': return a0;
-    default: throw new Error('Unsupported operation: ' + h);
-  }
-}
-function containsHead(j, heads) {
-  if (!Array.isArray(j)) return false;
-  if (heads.indexOf(j[0]) >= 0) return true;
-  for (let i = 1; i < j.length; i++) if (containsHead(j[i], heads)) return true;
-  return false;
-}
-
-/* ---- Classification: what kind of thing is this equation? ----
-   The left-hand side is read with a pattern, not by the engine, so the answer
-   never depends on what the engine saw in earlier formulas ("y" a variable in
-   one equation, a function name in the next). Only the right-hand side is parsed. */
-const NAME = String.raw`(?:\\(?:mathrm|text|mathit|operatorname)\s*\{\s*[A-Za-z]+\s*\}|\\[A-Za-z]+|[A-Za-z])(?:\s*_\s*(?:\{[^{}]*\}|[A-Za-z0-9]))?`;
-const FN_DEF = new RegExp(String.raw`^\s*(${NAME})\s*(?:\\left\s*)?\(\s*(${NAME}(?:\s*,\s*${NAME})*)\s*(?:\\right\s*)?\)\s*=([\s\S]+)$`);
-const SYM_DEF = new RegExp(String.raw`^\s*(${NAME})\s*=([\s\S]+)$`);
-const NAME_G = new RegExp(NAME, 'g');
-const BUILTIN_FN = /^\\(?:sin|cos|tan|cot|sec|csc|exp|ln|log|lg|arcsin|arccos|arctan|sinh|cosh|tanh|sqrt|frac|det|max|min|lim|sum|int|prod)\b/;
-/* Letters the engine reads as named constants. On Wikipedia they are almost
-   always ordinary variables (a phase, a damping rate), so turn them back. */
-const DEMOTE = { GoldenRatio: 'varphi', EulerGamma: 'gamma' };
-const NOT_VARIABLES = { ImaginaryUnit: 1, ComplexInfinity: 1, True: 1, False: 1, Nothing: 1, Undefined: 1 };
-function demote(j) {
-  if (typeof j === 'string') return DEMOTE[j] || j;
-  if (Array.isArray(j)) return [j[0]].concat(j.slice(1).map(demote));
-  return j;
-}
-function collectSymbols(j, set) {
-  if (typeof j === 'string') {
-    if (!Object.prototype.hasOwnProperty.call(CONSTS, j) && !NOT_VARIABLES[j] && /^[A-Za-z]/.test(j)) set.add(j);
-  } else if (Array.isArray(j)) {
-    for (let i = 1; i < j.length; i++) collectSymbols(j[i], set);
-  }
-  return set;
-}
-function symbolOf(ce, tex) {
-  const j = demote(ce.parse(tex).json);
-  return typeof j === 'string' && /^[A-Za-z]/.test(j) && !Object.prototype.hasOwnProperty.call(CONSTS, j) ? j : null;
-}
-const MAX_SYMBOLS = 8;
-/* Vector, matrix and operator notation is out of scope for a single curve. */
-const NON_SCALAR = /\\(?:mathbf|boldsymbol|bold|mathsf|mathbb|mathcal|vec|hat|nabla|partial|times|wedge|otimes|oplus|star|begin|det|R\b|Z\b|C\b|N\b|operatorname\s*\{\s*(?:tr|curl|div|grad|var)\s*\})/;
-export function classify(ce, tex) {
-  const out = { kind: 'implicit', json: null, fnTex: null, declared: [], argTex: [], lhsLatex: 'y', unknowns: [] };
-  if (NON_SCALAR.test(tex)) { out.kind = 'vector'; return out; }
-  let rest = null;
-  let m = FN_DEF.exec(tex);
-  if (m && !BUILTIN_FN.test(m[1])) {
-    out.fnTex = m[1].trim();
-    out.argTex = m[2].match(NAME_G).map((t) => t.trim());
-    out.declared = out.argTex.map((t) => symbolOf(ce, t));
-    if (out.declared.some((d) => !d)) return out;
-    out.lhsLatex = out.fnTex;
-    rest = m[3];
-  } else if ((m = SYM_DEF.exec(tex)) && !BUILTIN_FN.test(m[1])) {
-    out.lhsLatex = m[1].trim();
-    rest = m[2];
-  } else {
-    try { out.json = ce.parse(tex).json; } catch (err) { /* keep null */ }
-    return out;
-  }
-  let e = ce.parse(rest);
-  for (let guard = 0; guard < 4; guard++) {
-    if ((e.operator === 'Tuple' || e.operator === 'Sequence' || e.operator === 'Delimiter') && e.ops && e.ops.length === 1) e = e.op1;
-    else if ((e.operator === 'Equal' || e.operator === 'Approx') && e.ops && e.ops.length >= 2) e = e.op1;   /* a = b = c: keep b */
-    else break;
-  }
-  out.json = e.json;
-  if (typeof e.json === 'string') return out;
-  /* "..." in a formula, or another function applied to the same argument
-     (f(x) = 1 - g(x)), cannot be evaluated from this formula alone. */
-  if (containsHead(e.json, ['ContinuationPlaceholder']) || JSON.stringify(e.json).indexOf('ContinuationPlaceholder') >= 0) { out.kind = 'unsupported'; out.reason = 'The formula contains an ellipsis'; return out; }
-  if (out.argTex.length === 1) {
-    const v = out.argTex[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const call = new RegExp(String.raw`(\\[A-Za-z]+|[A-Za-z])(?:\s*_\s*(?:\{[^{}]*\}|[A-Za-z0-9]))?\s*(?:\\left\s*)?\(\s*` + v + String.raw`\s*(?:\\right\s*)?\)`, 'g');
-    let c;
-    while ((c = call.exec(rest)) !== null) {
-      if (!BUILTIN_FN.test(c[1]) && !/^\\(?:pi|cdot|times|left|right|frac|tfrac|dfrac)$/.test(c[1]) && c[1] !== 'e') { out.kind = 'unsupported'; out.reason = 'The formula refers to another function'; return out; }
-    }
-  }   /* h_1 = h_2 = 1: a bare symbol is not a curve */
-  if (!e.isValid || containsHead(e.json, ['Error'])) { out.kind = 'unparsed'; return out; }
-  if (containsHead(e.json, ['Integrate', 'Sum', 'Product', 'Limit', 'D', 'Derivative', 'PartialDerivative'])) { out.kind = 'identity'; return out; }
-  out.rhsJson = demote(e.json);
-  out.unknowns = Array.from(collectSymbols(out.rhsJson, new Set())).sort();
-  if (out.declared.length > 1) { out.kind = 'multi'; return out; }
-  if (!out.unknowns.length) { out.kind = 'constant'; return out; }
-  if (out.unknowns.length > MAX_SYMBOLS) { out.kind = 'toomany'; return out; }
-  try { compileJson(out.rhsJson); } catch (err) { out.kind = 'unsupported'; out.reason = err.message; return out; }
-  /* Axis guess: the declared argument if there is one, else a conventional variable name. */
-  const usual = ['x', 't', 'r', 'theta', 's', 'z', 'u', 'v', 'n', 'k'].filter((n) => out.unknowns.indexOf(n) >= 0)[0];
-  out.variable = out.declared.length && out.unknowns.indexOf(out.declared[0]) >= 0 ? out.declared[0] : (usual || out.unknowns[0]);
-  out.kind = 'plot';
-  return out;
-}
-
-/* ---- helpers ---- */
-const GREEK = { alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', varepsilon: 'ε', zeta: 'ζ', eta: 'η',
-  theta: 'θ', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ',
-  phi: 'φ', varphi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ',
-  Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω' };
-const SUBS = { 0: '₀', 1: '₁', 2: '₂', 3: '₃', 4: '₄', 5: '₅', 6: '₆', 7: '₇', 8: '₈', 9: '₉' };
-function plainSym(s) {
-  const parts = s.split('_');
-  const base = GREEK[parts[0]] || parts[0];
-  if (parts.length < 2) return base;
-  const sub = parts.slice(1).join('');
-  return base + (SUBS[sub] !== undefined ? SUBS[sub] : '_' + sub);
-}
-function symLatex(s) {
-  const parts = s.split('_');
-  const base = GREEK[parts[0]] ? '\\' + parts[0] : (parts[0].length > 1 ? '\\mathrm{' + parts[0] + '}' : parts[0]);
-  return parts.length < 2 ? base : base + '_{' + parts.slice(1).map((p) => (GREEK[p] ? '\\' + p : p)).join('') + '}';
-}
-function fmt(v) {
-  if (!isFinite(v)) return '—';
-  const a = Math.abs(v);
-  const s = (a !== 0 && (a >= 10000 || a < 0.001)) ? v.toExponential(2) : String(Number(v.toPrecision(3)));
-  return s.replace('-', '−');
-}
-function niceStep(s) {
-  const p = Math.pow(10, Math.floor(Math.log10(s))), f = s / p;
-  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
-}
-function defaultValue(name) { return /^(b|mu|phi|varphi|[A-Za-z]+_0)$/.test(name) ? 0 : 1; }
-function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 function renderTex(el, src, display) {
   if (window.katex) {
     try {
       src = src.replace(/([A-Za-z0-9}])\s*\\exp/g, '$1\\,\\exp');
-      el.innerHTML = window.katex.renderToString(src, { output: 'mathml', displayMode: !!display, throwOnError: false });
+      el.innerHTML = window.katex.renderToString(src, { displayMode: !!display, throwOnError: false });
       el.querySelectorAll('annotation').forEach((n) => n.remove());
       el.classList.remove('tex-fallback');
       return;
@@ -196,32 +24,21 @@ function renderTex(el, src, display) {
   el.textContent = src;
   el.classList.add('tex-fallback');
 }
-function setMsg(el, strong, rest) {
-  el.textContent = '';
-  const b = document.createElement('strong'); b.textContent = strong;
-  el.appendChild(b); el.appendChild(document.createTextNode(' ' + rest));
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+function setMsg(strong, rest) {
+  const msg = $('#ms-msg'); msg.textContent = '';
+  msg.appendChild(el('strong', '', strong)); msg.appendChild(document.createTextNode(' ' + rest));
 }
 
-/* ---- state ---- */
-const items = new Map();          /* id -> { tex, raw, kind } */
-const scanEngine = new ComputeEngine();
-const state = { eq: null, ce: null, variable: null, params: {}, range: 6, showD: true, f: null, df: null,
-  hoverX: null, xs: [], ys: [], ds: [], dLatex: '' };
-const canvas = $('#ms-canvas'), plot = $('#ms-plot'), ctx = canvas.getContext('2d');
-let geom = null;
+/* ------------------------------------------------------------------ state */
+const engine = new ComputeEngine();
+const items = new Map();                 // id -> { tex, raw, analysis }
+const st = { item: null, view: null, vi: 0, params: {}, axes: [], range: 6, mode: 'map', shade: 'curl', show3: 'field',
+  showD: true, hover: null, geom: null, f: null, df: null, dKind: '', xs: [], series: [] };
+const canvas = $('#ms-canvas'), plot = $('#ms-plot');
+const view3d = new View3D(canvas, plot);
 
-const REASONS = {
-  multi: ['This function takes two or more inputs.', 'It needs a surface or contour plot, which this version leaves out.'],
-  identity: ['This states a result.', 'It contains an integral, sum, limit or derivative, so there is no single curve to draw.'],
-  constant: ['This is a fixed number.', 'Nothing varies, so there is nothing to plot.'],
-  implicit: ['This is not written as a function.', 'This version only handles the form “name = expression”.'],
-  toomany: ['This has too many symbols.', 'More than eight sliders would not be usable.'],
-  unsupported: ['This uses an operation the plotter does not know yet.', ''],
-  vector: ['This uses vector, matrix or operator notation.', 'This version only draws single curves.'],
-  unparsed: ['The math engine could not parse this.', 'The TeX source is shown below.']
-};
-
-/* ---- messages from the content script ---- */
+/* ------------------------------------------------------------------ messages */
 window.addEventListener('message', (ev) => {
   if (ev.source !== window.parent) return;
   const msg = ev.data;
@@ -232,249 +49,350 @@ window.addEventListener('message', (ev) => {
 $('#ms-close').addEventListener('click', () => send({ type: 'close' }));
 
 function classifyAll(list) {
-  /* One synchronous pass. No timers: Chrome slows timers to about one per second
-     in an iframe that is not visible, which made long articles appear stuck. */
+  /* One synchronous pass, no timers: Chrome slows timers in an iframe that is not visible. */
+  const partsAll = list.map((it) => { try { return splitParts(String(it.tex)); } catch (err) { return []; } });
+  let table = null;
+  try { table = buildFunctionTable(engine, partsAll); } catch (err) { table = null; }
   const plottable = [];
-  for (const it of list) {
-    let kind = 'unparsed';
-    try { kind = classify(scanEngine, String(it.tex)).kind; } catch (err) { kind = 'unparsed'; }
-    items.set(it.id, { id: it.id, tex: String(it.tex), raw: String(it.raw || it.tex), kind });
-    if (kind === 'plot') plottable.push(it.id);
-  }
+  list.forEach((it, i) => {
+    let analysis = { views: [], parts: [] };
+    try { analysis = analyseFormula(engine, String(it.tex), table, partsAll[i]); } catch (err) { /* leave empty */ }
+    items.set(it.id, { id: it.id, tex: String(it.tex), raw: String(it.raw || it.tex), analysis });
+    if (analysis.views.length) plottable.push({ id: it.id, label: KIND_LABEL[analysis.views[0].kind] || 'Plot' });
+  });
   $('#ms-status').textContent = 'Wikipedia · ' + plottable.length + ' of ' + list.length + ' equations can plot';
   send({ type: 'classified', plottable });
 }
 
+/* ------------------------------------------------------------------ selecting */
 function select(id) {
   const it = items.get(id);
   if (!it) return;
-  /* A fresh engine per equation, so symbols from one formula never leak into the next. */
-  const ce = new ComputeEngine();
-  let eq;
-  try { eq = Object.assign({}, it, classify(ce, it.tex)); }
-  catch (err) { eq = Object.assign({}, it, { kind: 'unparsed', json: null }); }
-  state.eq = eq; state.ce = ce; state.hoverX = null;
-  renderTex($('#ms-eq-render'), eq.tex, true);
-  $('#ms-src').textContent = eq.raw;
-  $('#ms-json').textContent = eq.json ? JSON.stringify(eq.json) : 'Not parsed.';
-  const work = $('#ms-work'), msg = $('#ms-msg');
-  if (eq.kind !== 'plot') {
-    work.hidden = true; msg.hidden = false;
-    const r = REASONS[eq.kind] || REASONS.unparsed;
-    setMsg(msg, r[0], eq.kind === 'unsupported' ? (eq.reason || '') + '.' : r[1]);
-    $('#ms-ir').textContent = JSON.stringify({ kind: eq.kind, plottable: false }, null, 1);
-    return;
-  }
-  msg.hidden = true; work.hidden = false;
-  state.params = {};
-  eq.unknowns.forEach((u) => { state.params[u] = defaultValue(u); });
-  state.f = compileJson(eq.rhsJson);
-  buildVarChips(eq);
-  setVariable(eq.variable);
-}
-
-function buildVarChips(eq) {
-  const box = $('#ms-vars'); box.textContent = '';
-  eq.unknowns.forEach((u, i) => {
-    const lab = document.createElement('label'); lab.className = 'chip';
-    const inp = document.createElement('input');
-    inp.type = 'radio'; inp.name = 'ms-var'; inp.id = 'ms-var-' + i; inp.value = u;
-    inp.setAttribute('aria-label', plainSym(u));
-    inp.addEventListener('change', () => setVariable(u));
-    const sp = document.createElement('span'); renderTex(sp, symLatex(u), false);
+  st.item = it;
+  $('#ms-src').textContent = it.raw;
+  const views = it.analysis.views, box = $('#ms-views'), group = $('#ms-views-group');
+  box.textContent = '';
+  group.hidden = views.length < 2;
+  views.forEach((v, i) => {
+    const lab = el('label', 'chip');
+    const inp = el('input'); inp.type = 'radio'; inp.name = 'ms-view'; inp.id = 'ms-view-' + i; inp.checked = i === 0;
+    inp.addEventListener('change', () => showView(i));
+    const sp = el('span');
+    if (v.lhsLatex) renderTex(sp, v.lhsLatex, false); else sp.textContent = KIND_LABEL[v.kind];
+    inp.setAttribute('aria-label', KIND_LABEL[v.kind] + (v.lhsLatex ? ' of ' + v.lhsLatex : ''));
     lab.appendChild(inp); lab.appendChild(sp); box.appendChild(lab);
   });
+  if (!views.length) {
+    renderTex($('#ms-eq-render'), it.tex, true);
+    $('#ms-work').hidden = true; $('#ms-msg').hidden = false;
+    const reason = (it.analysis.parts.find((p) => p.reason) || {}).reason || 'This is not written as a function';
+    setMsg('MathScope cannot draw this one.', reason + '.');
+    $('#ms-json').textContent = 'Not parsed.'; $('#ms-ir').textContent = JSON.stringify({ plottable: false }, null, 1);
+    return;
+  }
+  showView(0);
 }
 
-function setVariable(v) {
-  const eq = state.eq;
-  state.variable = v; state.hoverX = null;
-  document.querySelectorAll('input[name="ms-var"]').forEach((r) => { r.checked = r.value === v; });
+function chipGroup(title, name, options, current, onPick, math) {
+  const fs = el('fieldset', 'group'); fs.appendChild(el('legend', '', title));
+  const box = el('div', 'chips');
+  options.forEach((o, i) => {
+    const value = typeof o === 'string' ? o : o.value, text = typeof o === 'string' ? o : o.text;
+    const lab = el('label', 'chip' + (math ? '' : ' seg'));
+    const inp = el('input'); inp.type = 'radio'; inp.name = name; inp.id = name + '-' + i; inp.value = value; inp.checked = value === current;
+    inp.addEventListener('change', () => onPick(value));
+    const sp = el('span');
+    if (math) { renderTex(sp, symLatex(value), false); inp.setAttribute('aria-label', plainSym(value)); } else sp.textContent = text;
+    lab.appendChild(inp); lab.appendChild(sp); box.appendChild(lab);
+  });
+  fs.appendChild(box);
+  return fs;
+}
+
+const AXIS_TITLES = { curve: ['Horizontal axis'], complex: ['Horizontal axis'], surface: ['First axis', 'Second axis'], implicit: ['Horizontal axis', 'Vertical axis'],
+  pcurve: ['Traced by'], psurface: ['Swept by', 'and by'] };
+function initialAxes(v) {
+  if (v.kind === 'curve' || v.kind === 'complex') return [v.variable];
+  if (v.kind === 'surface' || v.kind === 'implicit') return [v.xVar, v.yVar];
+  if (v.kind === 'pcurve' || v.kind === 'psurface') return v.params.slice();
+  return v.coords.slice();
+}
+
+function showView(i) {
+  const v = st.item.analysis.views[i];
+  st.view = v; st.vi = i; st.hover = null; st.geom = null;
+  renderTex($('#ms-eq-render'), v.tex || st.item.tex, true);
+  $('#ms-msg').hidden = true; $('#ms-work').hidden = false;
+  $('#ms-json').textContent = JSON.stringify(v.json);
+  st.axes = initialAxes(v);
+  st.params = { __terms: DEFAULT_TERMS };
+  const shifts = v.rhsJson !== undefined && v.kind !== 'implicit' ? locationLike(v.rhsJson, st.axes) : new Set();
+  v.unknowns.forEach((u) => { st.params[u] = v.kind === 'implicit' ? 1 : (shifts.has(u) ? 0 : defaultValue(u)); });
+  st.mode = 'map'; st.shade = 'curl'; st.show3 = 'field'; st.range = 6;
+  if (v.kind === 'curve' || v.kind === 'surface') settleDefaults(v);
+  build();
+}
+
+/* If the guessed starting values leave nothing to draw (a symbol set to 0 sits in a
+   denominator, say), start every parameter at 1 instead. */
+function settleDefaults(v) {
+  const f = compileJson(v.rhsJson, v.ctx), env = Object.assign({}, st.params);
+  let ok = false;
+  for (let k = 0; k < 40 && !ok; k++) {
+    env[st.axes[0]] = -5.9 + 11.8 * ((k * 7) % 40) / 39; if (st.axes[1]) env[st.axes[1]] = -5.3 + 10.6 * ((k * 11) % 40) / 39;
+    ok = isFinite(f(env));
+  }
+  if (!ok) v.unknowns.forEach((u) => { st.params[u] = 1; });
+}
+
+function paramNames() {
+  const v = st.view;
+  const free = v.unknowns.filter((u) => st.axes.indexOf(u) < 0);
+  if (v.usesTerms) free.push('__terms');
+  return free;
+}
+
+function build() {
+  const v = st.view, kind = v.kind;
+  view3d.active = false;
+  /* axis pickers */
+  const axes = $('#ms-axes'); axes.textContent = '';
+  (AXIS_TITLES[kind] || []).forEach((title, k) => {
+    axes.appendChild(chipGroup(title, 'ms-axis-' + k, v.unknowns, st.axes[k], (value) => {
+      const other = st.axes.indexOf(value);
+      if (other >= 0 && other !== k) st.axes[other] = st.axes[k];       // swap, so two axes never coincide
+      st.axes[k] = value; st.hover = null; build();
+    }, true));
+  });
+  /* sliders */
   const box = $('#ms-params'); box.textContent = '';
-  const others = eq.unknowns.filter((u) => u !== v);
-  others.forEach((u, i) => {
-    const row = document.createElement('div'); row.className = 'param';
-    const name = document.createElement('label'); name.htmlFor = 'ms-p-' + i; renderTex(name, symLatex(u), false);
-    const inp = document.createElement('input');
-    inp.type = 'range'; inp.id = 'ms-p-' + i; inp.min = -5; inp.max = 5; inp.step = 0.05; inp.value = state.params[u];
-    inp.setAttribute('aria-label', plainSym(u));
-    const out = document.createElement('output'); out.htmlFor = inp.id; out.textContent = fmt(state.params[u]);
-    inp.addEventListener('input', () => {
-      state.params[u] = parseFloat(inp.value); out.textContent = fmt(state.params[u]);
-      recompute(); draw(); showIR();
-    });
+  const names = paramNames();
+  names.forEach((u, i) => {
+    const row = el('div', 'param');
+    const name = el('label'); name.htmlFor = 'ms-p-' + i; renderTex(name, symLatex(u), false);
+    const inp = el('input'); inp.type = 'range'; inp.id = 'ms-p-' + i;
+    if (u === '__terms') { inp.min = 1; inp.max = 60; inp.step = 1; } else { inp.min = -5; inp.max = 5; inp.step = 0.05; }
+    inp.value = st.params[u]; inp.setAttribute('aria-label', plainSym(u));
+    const out = el('output', '', fmt(st.params[u])); out.htmlFor = inp.id;
+    inp.addEventListener('input', () => { st.params[u] = parseFloat(inp.value); out.textContent = fmt(st.params[u]); prepare(false); render(); showIR(); });
     row.appendChild(name); row.appendChild(inp); row.appendChild(out); box.appendChild(row);
   });
-  $('#ms-params-note').textContent = others.length
-    ? 'Starting values are guesses. Every symbol not on the axis becomes a slider.'
+  $('#ms-params-group').hidden = false;
+  $('#ms-params-note').textContent = names.length
+    ? 'Starting values are guesses. Every symbol not on an axis becomes a slider.' + (v.usesTerms ? ' “terms” sets how many terms of the infinite sum are added.' : '')
     : 'This equation has no other symbols, so there is nothing to adjust.';
-  state.df = null; state.dLatex = '';
-  try {
-    const d = state.ce.box(['D', eq.rhsJson, v]).evaluate().simplify();
-    state.df = compileJson(d.json);
-    state.dLatex = d.latex.replace(/\\mathrm\{(varphi|gamma)\}/g, '\\$1');
-  } catch (err) { state.df = null; }
-  const lhs = (eq.fnTex && eq.declared[0] === v) ? eq.fnTex + "'(" + symLatex(v) + ')'
-    : '\\frac{\\partial ' + eq.lhsLatex + '}{\\partial ' + symLatex(v) + '}';
-  if (state.df) renderTex($('#ms-deriv'), lhs + ' = ' + state.dLatex, true);
-  else $('#ms-deriv').textContent = 'The engine could not differentiate this expression.';
-  $('#ms-show-d').disabled = !state.df;
-  $('#ms-readout').textContent = 'Hover the plot to read values.';
-  recompute(); draw(); showIR();
+  /* options */
+  const opts = $('#ms-options'); opts.textContent = '';
+  const spatial = ['curve', 'complex', 'surface', 'implicit', 'field2d', 'field3d'].indexOf(kind) >= 0;
+  if (spatial) opts.appendChild(chipGroup('Range', 'ms-range', [{ value: '3', text: '±3' }, { value: '6', text: '±6' }, { value: '12', text: '±12' }], String(st.range), (val) => { st.range = parseFloat(val); st.hover = null; prepare(false); render(); }));
+  if (kind === 'surface') opts.appendChild(chipGroup('View', 'ms-mode', [{ value: 'map', text: 'Map' }, { value: '3d', text: '3D' }], st.mode, (val) => { st.mode = val; st.hover = null; legend(); render(); }));
+  if (kind === 'field2d') opts.appendChild(chipGroup('Colour shows', 'ms-shade', [{ value: 'curl', text: 'Curl' }, { value: 'div', text: 'Divergence' }, { value: 'strength', text: 'Strength' }], st.shade, (val) => { st.shade = val; render(); }));
+  if (kind === 'field3d') opts.appendChild(chipGroup('Arrows show', 'ms-show3', [{ value: 'field', text: 'The field' }, { value: 'curl', text: 'Its curl' }], st.show3, (val) => { st.show3 = val; render(); }));
+  $('#ms-deriv-box').hidden = kind !== 'curve';
+  $('#ms-table-box').hidden = kind !== 'curve' && kind !== 'complex';
+  prepare(true); legend(); render(); showIR();
 }
 
-function showIR() {
-  const eq = state.eq, p = {};
-  eq.unknowns.forEach((u) => { if (u !== state.variable) p[u] = state.params[u]; });
-  $('#ms-ir').textContent = JSON.stringify({
-    kind: 'scalar-function', variable: state.variable, parameters: p,
-    inputDimension: 1, outputDimension: 1, source: 'wikipedia'
-  }, null, 1);
-}
-
-/* ---- plot ---- */
-function recompute() {
-  if (!state.f) return;
-  const n = 400, R = state.range, env = Object.assign({}, state.params);
-  state.xs = new Array(n + 1); state.ys = new Array(n + 1); state.ds = new Array(n + 1);
-  for (let i = 0; i <= n; i++) {
-    const x = -R + (2 * R * i) / n;
-    env[state.variable] = x;
-    state.xs[i] = x;
-    state.ys[i] = state.f(env);
-    state.ds[i] = state.df ? state.df(env) : NaN;
+/* ------------------------------------------------------------------ compile for the current view and axes */
+function prepare(full) {
+  const v = st.view, kind = v.kind;
+  if (!full) return;
+  st.f = null; st.df = null; st.dKind = '';
+  if (kind === 'curve') {
+    st.f = compileJson(v.rhsJson, v.ctx);
+    const x = st.axes[0];
+    let latex = '';
+    if (!v.numericOnly) {
+      try {
+        const got = scoped(engine, () => { const d = engine.box(['D', v.rhsJson, x]).evaluate().simplify(); return { json: d.json, latex: d.latex }; });
+        st.df = compileJson(got.json, v.ctx); latex = got.latex.replace(/\\mathrm\{(varphi|gamma)\}/g, '\\$1'); st.dKind = 'symbolic';
+      } catch (err) { st.df = null; }
+    }
+    if (!st.df) {                                  // numeric slope where no formula is available
+      const f = st.f;
+      st.df = (env) => { const x0 = env[x], h = 1e-4 * Math.max(1, Math.abs(x0)); env[x] = x0 + h; const a = f(env); env[x] = x0 - h; const b = f(env); env[x] = x0; return (a - b) / (2 * h); };
+      st.dKind = 'numeric';
+    }
+    const lhs = (v.fnTex && v.declared[0] === x) ? v.fnTex + "'(" + symLatex(x) + ')' : '\\frac{\\partial ' + (v.lhsLatex || 'y') + '}{\\partial ' + symLatex(x) + '}';
+    $('#ms-deriv-cap').textContent = st.dKind === 'symbolic' ? 'Derivative, computed symbolically' : 'Derivative';
+    if (st.dKind === 'symbolic') renderTex($('#ms-deriv'), lhs + ' = ' + latex, true);
+    else $('#ms-deriv').textContent = 'Estimated numerically from the curve. This formula has a sum, an integral, cases or a function defined elsewhere, so no closed form is shown.';
+  } else if (kind === 'complex') {
+    st.f = compileComplex(v.rhsJson, v.ctx);
+  } else if (kind === 'surface' || kind === 'implicit') {
+    st.f = compileJson(v.rhsJson, v.ctx);
   }
-  fillTable();
 }
+
+function legend() {
+  const v = st.view, box = $('#ms-legend'); box.textContent = '';
+  const sw = (cls, text) => { const s = el('span', 'legend-item'); s.appendChild(el('span', 'swatch' + (cls ? ' ' + cls : ''))); s.appendChild(document.createTextNode(text)); return s; };
+  const note = (text) => el('span', 'legend-item', text);
+  if (v.kind === 'curve') {
+    box.appendChild(sw('', 'Function'));
+    const lab = el('label', 'legend-item'); lab.htmlFor = 'ms-show-d';
+    const cb = el('input'); cb.type = 'checkbox'; cb.id = 'ms-show-d'; cb.checked = st.showD;
+    cb.addEventListener('change', () => { st.showD = cb.checked; render(); });
+    lab.appendChild(cb); lab.appendChild(el('span', 'swatch d')); lab.appendChild(document.createTextNode('Derivative'));
+    box.appendChild(lab);
+  } else if (v.kind === 'complex') { box.appendChild(sw('', 'Real part')); box.appendChild(sw('d', 'Imaginary part')); }
+  else if (v.kind === 'surface') box.appendChild(note(st.mode === 'map' ? 'Colour shows the value. White lines join equal values.' : 'Height and colour show the value. Drag to rotate.'));
+  else if (v.kind === 'implicit') box.appendChild(note('The line marks where the two sides are equal.'));
+  else if (v.kind === 'field2d') box.appendChild(note('Arrows show direction. Longer means stronger.'));
+  else if (v.kind === 'field3d') box.appendChild(note('Brighter, longer arrows are stronger. Drag to rotate.'));
+  else if (v.kind === 'pcurve' && v.dims === 2) box.appendChild(note('The curve traced as ' + plainSym(st.axes[0]) + ' runs through its range.'));
+  else box.appendChild(note('Drag to rotate.'));
+  $('#ms-readout').textContent = hint();
+}
+function hint() {
+  const k = st.view.kind;
+  if (k === 'curve' || k === 'complex') return 'Hover the plot to read values.';
+  if (k === 'surface' && st.mode === 'map') return 'Hover the map to read values.';
+  if (k === 'field2d') return 'Hover the map to read the field.';
+  if (k === 'implicit') return 'Move the sliders to reshape the curve.';
+  return '';
+}
+
+function paramRange(name, other) {
+  if (name === 'theta') return other === 'phi' || other === 'varphi' ? [0, Math.PI] : [0, 2 * Math.PI];
+  if (name === 'phi' || name === 'varphi' || name === 't') return [0, 2 * Math.PI];
+  return [-2, 2];
+}
+
+/* ------------------------------------------------------------------ drawing */
+function render() {
+  const v = st.view;
+  if (!v) return;
+  const kind = v.kind, R = st.range, env = Object.assign({}, st.params);
+  view3d.active = false;
+  if (kind === 'curve' || kind === 'complex') {
+    const n = 400, x = st.axes[0];
+    st.xs = new Array(n + 1); const a = new Array(n + 1), b = new Array(n + 1);
+    for (let i = 0; i <= n; i++) {
+      const xv = -R + (2 * R * i) / n; env[x] = xv; st.xs[i] = xv;
+      if (kind === 'curve') { a[i] = st.f(env); b[i] = st.showD ? st.df(env) : NaN; }
+      else { const z = st.f(env); a[i] = z[0]; b[i] = z[1]; }
+    }
+    st.series = [{ ys: a, color: cssVar('--series-1') }];
+    if (kind === 'complex' || st.showD) st.series.push({ ys: b, color: cssVar('--series-2'), dash: [6, 4] });
+    const hv = st.hover !== null ? evalAt(st.hover) : null;
+    st.geom = drawCurve(canvas, plot, { R, xs: st.xs, series: st.series, xLabel: plainSym(x), hoverX: st.hover, hoverVals: hv ? hv.slice(0, st.series.length) : [] });
+    fillTable();
+    canvas.setAttribute('aria-label', 'Plot against ' + plainSym(x) + ' from ' + fmt(-R) + ' to ' + fmt(R) + '. Open the values table below for numbers.');
+  } else if (kind === 'surface' || kind === 'implicit') {
+    const [x, y] = st.axes, f = st.f;
+    const value = (xv, yv) => { env[x] = xv; env[y] = yv; return f(env); };
+    if (kind === 'surface' && st.mode === '3d') {
+      view3d.active = true;
+      view3d.setScene(surfaceScene(value, R, { x: plainSym(x), y: plainSym(y), z: 'value' }));
+      canvas.setAttribute('aria-label', 'Three-dimensional surface over ' + plainSym(x) + ' and ' + plainSym(y) + '.');
+    } else {
+      st.geom = drawMap(canvas, plot, { R, value, zeroOnly: kind === 'implicit', xLabel: plainSym(x), yLabel: plainSym(y), hover: st.hover });
+      canvas.setAttribute('aria-label', (kind === 'implicit' ? 'Curve' : 'Map of values') + ' over ' + plainSym(x) + ' and ' + plainSym(y) + ', each from ' + fmt(-R) + ' to ' + fmt(R) + '.');
+    }
+  } else if (kind === 'field2d') {
+    const [x, y] = v.coords, P = v.comps[0], Q = v.comps[1], h = 1e-3 * R;
+    if (v.coords[2] === undefined && env.z === undefined) env.z = 0;
+    const vec = (xv, yv) => { env[x] = xv; env[y] = yv; return [P(env), Q(env)]; };
+    const shade = st.shade === 'strength' ? (xv, yv) => { const w = vec(xv, yv); return Math.hypot(w[0], w[1]); }
+      : st.shade === 'curl' ? (xv, yv) => (vec(xv + h, yv)[1] - vec(xv - h, yv)[1] - vec(xv, yv + h)[0] + vec(xv, yv - h)[0]) / (2 * h)
+        : (xv, yv) => (vec(xv + h, yv)[0] - vec(xv - h, yv)[0] + vec(xv, yv + h)[1] - vec(xv, yv - h)[1]) / (2 * h);
+    st.fieldFns = { vec, shade };
+    st.geom = drawMap(canvas, plot, { R, value: shade, diverging: st.shade !== 'strength', vector: vec, xLabel: plainSym(x), yLabel: plainSym(y), hover: st.hover });
+    canvas.setAttribute('aria-label', 'Vector field over ' + plainSym(x) + ' and ' + plainSym(y) + ', coloured by ' + (st.shade === 'div' ? 'divergence' : st.shade) + '.');
+  } else if (kind === 'field3d') {
+    const [x, y, z] = v.coords, C = v.comps;
+    const F = (xv, yv, zv) => { env[x] = xv; env[y] = yv; env[z] = zv; return [C[0](env), C[1](env), C[2](env)]; };
+    const h = 1e-3 * R;
+    const curl = (xv, yv, zv) => {
+      const dx = [F(xv + h, yv, zv), F(xv - h, yv, zv)], dy = [F(xv, yv + h, zv), F(xv, yv - h, zv)], dz = [F(xv, yv, zv + h), F(xv, yv, zv - h)];
+      const d = (pair, c) => (pair[0][c] - pair[1][c]) / (2 * h);
+      return [d(dy, 2) - d(dz, 1), d(dz, 0) - d(dx, 2), d(dx, 1) - d(dy, 0)];
+    };
+    view3d.active = true;
+    view3d.setScene(fieldScene(st.show3 === 'curl' ? curl : F, R, { x: plainSym(x), y: plainSym(y), z: plainSym(z) }));
+    canvas.setAttribute('aria-label', 'Three-dimensional vector field.');
+  } else if (kind === 'pcurve') {
+    const t = st.axes[0], rng = paramRange(t, null), fs = v.fs;
+    if (v.dims === 2) {
+      const pts = [];
+      for (let i = 0; i <= 500; i++) { env[t] = rng[0] + (rng[1] - rng[0]) * i / 500; pts.push([fs[0](env), fs[1](env)]); }
+      drawPath(canvas, plot, pts, { x: 'x', y: 'y' });
+    } else {
+      view3d.active = true;
+      const long = [rng[0], rng[0] + (rng[1] - rng[0]) * (rng[0] === 0 ? 3 : 1)];      // three turns for a space curve
+      view3d.setScene(spaceCurveScene((tv) => { env[t] = tv; return [fs[0](env), fs[1](env), fs[2](env)]; }, long, { x: 'x', y: 'y', z: 'z' }));
+    }
+    canvas.setAttribute('aria-label', 'Curve traced by ' + plainSym(t) + '.');
+  } else if (kind === 'psurface') {
+    const [u, w] = st.axes, fs = v.fs;
+    view3d.active = true;
+    view3d.setScene(parametricSurfaceScene((uv, wv) => { env[u] = uv; env[w] = wv; return [fs[0](env), fs[1](env), fs[2](env)]; },
+      [paramRange(u, w), paramRange(w, u)], { x: 'x', y: 'y', z: 'z' }));
+    canvas.setAttribute('aria-label', 'Surface swept by ' + plainSym(u) + ' and ' + plainSym(w) + '.');
+  }
+  canvas.style.cursor = view3d.active ? 'grab' : 'crosshair';
+}
+
 function evalAt(x) {
-  const env = Object.assign({}, state.params); env[state.variable] = x;
-  return [state.f(env), state.df ? state.df(env) : NaN];
+  const env = Object.assign({}, st.params); env[st.axes[0]] = x;
+  if (st.view.kind === 'complex') return st.f(env);
+  return [st.f(env), st.df(env)];
 }
 function fillTable() {
-  const t = $('#ms-table'), R = state.range;
+  const t = $('#ms-table'), R = st.range, complex = st.view.kind === 'complex';
   t.textContent = '';
   const head = t.createTHead().insertRow();
-  [plainSym(state.variable), 'Function', 'Derivative'].forEach((h) => {
-    const th = document.createElement('th'); th.textContent = h; head.appendChild(th);
-  });
+  [plainSym(st.axes[0])].concat(complex ? ['Real part', 'Imaginary part'] : ['Function', 'Derivative']).forEach((h) => head.appendChild(el('th', '', h)));
   const body = t.createTBody();
   for (let k = 0; k <= 8; k++) {
     const x = -R + (2 * R * k) / 8, r = evalAt(x), row = body.insertRow();
-    [x, r[0], r[1]].forEach((v) => { row.insertCell().textContent = fmt(v); });
+    [x, r[0], r[1]].forEach((val) => { row.insertCell().textContent = fmt(val); });
   }
 }
-
-function draw() {
-  if (!state.eq || state.eq.kind !== 'plot' || !state.f) return;
-  const W = plot.clientWidth, H = 230;
-  if (!W) return;
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const m = { l: 46, r: 10, t: 10, b: 24 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
-  const R = state.range, showD = state.showD && !!state.df, LIM = 1e6;
-  let lo = 0, hi = 0, any = false;
-  const scan = (arr) => {
-    for (let i = 0; i < arr.length; i++) {
-      const v = arr[i];
-      if (isFinite(v) && Math.abs(v) < LIM) { any = true; if (v < lo) lo = v; if (v > hi) hi = v; }
-    }
-  };
-  scan(state.ys); if (showD) scan(state.ds);
-  if (lo === hi) hi = lo + 1;
-  const step = niceStep((hi - lo) / 4);
-  lo = Math.floor(lo / step + 1e-9) * step; hi = Math.ceil(hi / step - 1e-9) * step;
-  if (lo === hi) hi = lo + step;
-  const X = (x) => m.l + ((x + R) / (2 * R)) * pw;
-  const Y = (y) => m.t + (1 - (y - lo) / (hi - lo)) * ph;
-  geom = { m, pw, R };
-
-  const cGrid = cssVar('--grid'), cMuted = cssVar('--muted'), cInk = cssVar('--ink'), cSurf = cssVar('--surface');
-  ctx.clearRect(0, 0, W, H);
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.lineWidth = 1;
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  const ny = Math.round((hi - lo) / step);
-  for (let k = 0; k <= ny; k++) {
-    const yv = lo + k * step, py = Math.round(Y(yv)) + 0.5, zero = Math.abs(yv) < step * 1e-6;
-    ctx.strokeStyle = zero ? cMuted : cGrid;
-    ctx.beginPath(); ctx.moveTo(m.l, py); ctx.lineTo(m.l + pw, py); ctx.stroke();
-    ctx.fillStyle = cMuted; ctx.fillText(fmt(zero ? 0 : yv), m.l - 6, py);
-  }
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  for (let t = -3; t <= 3; t++) {
-    const xv = (t * R) / 3, px = Math.round(X(xv)) + 0.5;
-    if (t === 0) { ctx.strokeStyle = cMuted; ctx.beginPath(); ctx.moveTo(px, m.t); ctx.lineTo(px, m.t + ph); ctx.stroke(); }
-    ctx.fillStyle = cMuted; ctx.fillText(fmt(xv), px, m.t + ph + 6);
-  }
-  ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillStyle = cInk;
-  ctx.fillText(plainSym(state.variable), m.l + pw - 2, m.t + ph - 4);
-
-  if (!any) {
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = cMuted;
-    ctx.fillText('No real values with these settings.', m.l + pw / 2, m.t + ph / 2);
-    return;
-  }
-  ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, pw, ph); ctx.clip();
-  const curve = (arr, color, dash) => {
-    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.setLineDash(dash);
-    ctx.beginPath();
-    let pen = false;
-    for (let i = 0; i < arr.length; i++) {
-      const v = arr[i];
-      if (!isFinite(v) || Math.abs(v) >= LIM) { pen = false; continue; }
-      const px = X(state.xs[i]), py = Y(v);
-      if (pen) ctx.lineTo(px, py); else { ctx.moveTo(px, py); pen = true; }
-    }
-    ctx.stroke(); ctx.setLineDash([]);
-  };
-  if (showD) curve(state.ds, cssVar('--series-2'), [6, 4]);
-  curve(state.ys, cssVar('--series-1'), []);
-  if (state.hoverX !== null) {
-    const hx = state.hoverX, r = evalAt(hx), cx = Math.round(X(hx)) + 0.5;
-    ctx.strokeStyle = cMuted; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(cx, m.t); ctx.lineTo(cx, m.t + ph); ctx.stroke();
-    const dots = [[r[0], cssVar('--series-1')]];
-    if (showD) dots.push([r[1], cssVar('--series-2')]);
-    dots.forEach((d) => {
-      if (!isFinite(d[0])) return;
-      ctx.beginPath(); ctx.arc(X(hx), Y(d[0]), 5, 0, Math.PI * 2);
-      ctx.fillStyle = d[1]; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = cSurf; ctx.stroke();
-    });
-  }
-  ctx.restore();
-  canvas.setAttribute('aria-label', 'Plot against ' + plainSym(state.variable) + ' from ' + fmt(-R) + ' to ' + fmt(R) +
-    '. Open the values table below for numbers.');
+function showIR() {
+  const v = st.view, p = {};
+  paramNames().forEach((u) => { p[plainSym(u)] = st.params[u]; });
+  $('#ms-ir').textContent = JSON.stringify({ kind: v.kind, axes: st.axes.map(plainSym), parameters: p, source: 'wikipedia' }, null, 1);
 }
 
+/* ------------------------------------------------------------------ pointer readouts */
+function readout(pairs) {
+  const out = $('#ms-readout'); out.textContent = '';
+  pairs.forEach(([label, value], i) => { out.appendChild(document.createTextNode((i ? ' · ' : '') + label)); out.appendChild(el('b', '', value)); });
+}
 function pointer(ev) {
-  if (!geom || !state.f) return;
-  const rect = canvas.getBoundingClientRect();
-  let t = (ev.clientX - rect.left - geom.m.l) / geom.pw;
-  t = Math.max(0, Math.min(1, t));
-  const x = Math.round((-geom.R + t * 2 * geom.R) * 100) / 100;
-  state.hoverX = x;
-  const r = evalAt(x), out = $('#ms-readout');
-  out.textContent = '';
-  const add = (label, value) => {
-    out.appendChild(document.createTextNode(label));
-    const b = document.createElement('b'); b.textContent = value; out.appendChild(b);
-  };
-  add(plainSym(state.variable) + ' = ', fmt(x));
-  add(' · function ', fmt(r[0]));
-  if (state.showD && state.df) add(' · derivative ', fmt(r[1]));
-  draw();
+  const v = st.view;
+  if (!v || view3d.active || !st.geom) return;
+  if (v.kind === 'curve' || v.kind === 'complex') {
+    const rect = canvas.getBoundingClientRect(), g = st.geom;
+    let t = (ev.clientX - rect.left - g.m.l) / g.pw; t = Math.max(0, Math.min(1, t));
+    const x = Math.round((-g.R + t * 2 * g.R) * 100) / 100, r = evalAt(x);
+    st.hover = x;
+    const pairs = [[plainSym(st.axes[0]) + ' = ', fmt(x)]];
+    if (v.kind === 'complex') { pairs.push(['real ', fmt(r[0])]); pairs.push(['imaginary ', fmt(r[1])]); }
+    else { pairs.push(['function ', fmt(r[0])]); if (st.showD) pairs.push(['derivative ', fmt(r[1])]); }
+    readout(pairs); render();
+  } else if ((v.kind === 'surface' && st.mode === 'map') || v.kind === 'field2d') {
+    const p = st.geom.toData(ev.clientX, ev.clientY);
+    if (!p) return;
+    st.hover = p;
+    if (v.kind === 'surface') {
+      const env = Object.assign({}, st.params); env[st.axes[0]] = p[0]; env[st.axes[1]] = p[1];
+      readout([[plainSym(st.axes[0]) + ' = ', fmt(p[0])], [plainSym(st.axes[1]) + ' = ', fmt(p[1])], ['value ', fmt(st.f(env))]]);
+    } else {
+      const w = st.fieldFns.vec(p[0], p[1]);
+      readout([['at (', fmt(p[0]) + ', ' + fmt(p[1]) + ')'], ['field (', fmt(w[0]) + ', ' + fmt(w[1]) + ')'], [(st.shade === 'div' ? 'divergence ' : st.shade + ' '), fmt(st.fieldFns.shade(p[0], p[1]))]]);
+    }
+    render();
+  }
 }
 canvas.addEventListener('pointerdown', pointer);
 canvas.addEventListener('pointermove', pointer);
 canvas.addEventListener('pointerleave', (ev) => {
-  if (ev.pointerType === 'mouse') { state.hoverX = null; $('#ms-readout').textContent = 'Hover the plot to read values.'; draw(); }
+  if (ev.pointerType === 'mouse' && st.view && !view3d.active && st.hover !== null) { st.hover = null; $('#ms-readout').textContent = hint(); render(); }
 });
-$('#ms-show-d').addEventListener('change', (ev) => { state.showD = ev.target.checked; draw(); });
-document.querySelectorAll('input[name="ms-range"]').forEach((r) => {
-  r.addEventListener('change', () => { state.range = parseFloat(r.value); state.hoverX = null; recompute(); draw(); });
-});
-new ResizeObserver(() => draw()).observe(plot);
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+new ResizeObserver(() => { if (st.view) render(); }).observe(plot);
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (st.view) render(); });
 
 send({ type: 'ready' });
