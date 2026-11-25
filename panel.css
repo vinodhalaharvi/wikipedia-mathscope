@@ -120,3 +120,6 @@ pre {
 .katex-display { margin: 0.2em 0; }
 .chip .katex, .param .katex { font-size: 1em; }
 .eq-render, .deriv { overflow-x: auto; overflow-y: hidden; }
+#ms-canvas3d { cursor: grab; }
+#ms-canvas3d:active { cursor: grabbing; }
+.plot canvas[hidden] { display: none; }

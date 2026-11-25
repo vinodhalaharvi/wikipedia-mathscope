@@ -1,4 +1,4 @@
-# MathScope 0.2
+# MathScope 0.3
 
 A Chrome extension that makes equations on Wikipedia interactive. It marks every
 formula it can draw. Click one to get a plot with sliders for its symbols:
@@ -57,10 +57,12 @@ text instead of TeX.
 | --- | --- |
 | `content.js`, `content.css` | Runs on the page. Reads each formula's TeX source, marks the drawable ones, hosts the panel iframe. |
 | `math.js` | Splits and classifies formulas, and evaluates them by walking the parsed tree. No generated code, as Manifest V3 requires. |
-| `plots.js` | Draws curves, maps and the 3D views on a plain canvas. |
+| `plots.js` | Draws curves and maps on a plain canvas, plus a simple 3D fallback. |
+| `plots3d.js` | The 3D views (surfaces, 3D fields, space curves, shapes), drawn with Three.js. Rotate by dragging, zoom by scrolling. |
 | `panel.html`, `panel.js`, `panel.css` | The panel: controls, sliders and readouts. |
 | `vendor/compute-engine` | Cortex Compute Engine 0.173.0 (MIT). TeX parsing and symbolic derivatives. |
 | `vendor/katex` | KaTeX 0.19.1 (MIT). Typesets formulas in the panel. |
+| `vendor/three` | Three.js 0.187.0 (MIT), bundled down to the parts used. Rebuild with `esbuild vendor/three/entry.js --bundle --format=esm --minify` after `npm install three`. |
 
 The extension requests no permissions, makes no network requests, and only
 runs on `*.wikipedia.org`. Nothing on Wikipedia itself is changed.
@@ -78,8 +80,8 @@ runs on `*.wikipedia.org`. Nothing on Wikipedia itself is changed.
 - Slider ranges are fixed at −5 to 5 and starting values are guesses.
 - `γ` and `φ` are treated as variables, `e`, `i` and `π` as constants.
 - Symbolic derivatives are correct but not tidied into their shortest form.
-- The 3D views are drawn back to front without true hidden-surface removal, so
-  self-intersecting shapes can show small ordering glitches.
+- The 3D views need WebGL. Where it is unavailable, a simpler canvas drawing is
+  used: it rotates but does not zoom, and folded shapes can show ordering glitches.
 
 ## License
 

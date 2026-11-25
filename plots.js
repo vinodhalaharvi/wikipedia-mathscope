@@ -271,16 +271,18 @@ export class View3D {
 }
 
 /* ------------------------------------------------------------------ scene builders */
-export function surfaceScene(value, R, labels) {
-  const N = 34, z = new Float64Array((N + 1) * (N + 1)); let lo = Infinity, hi = -Infinity;
+export function surfaceScene(value, R, labels, res) {
+  const N = res || 34, z = new Float64Array((N + 1) * (N + 1)); let lo = Infinity, hi = -Infinity;
   for (let iy = 0; iy <= N; iy++) for (let ix = 0; ix <= N; ix++) {
     const v = value(-R + (2 * R * ix) / N, -R + (2 * R * iy) / N); z[iy * (N + 1) + ix] = v;
     if (isFinite(v) && Math.abs(v) < LIM) { if (v < lo) lo = v; if (v > hi) hi = v; }
   }
-  const items = [];
+  const items = []; let grid = null;
   if (lo <= hi) {
     if (lo === hi) { lo -= 0.5; hi += 0.5; }
     const Z = (v) => -0.75 + 1.5 * (v - lo) / (hi - lo), U = (i) => -1 + (2 * i) / N;
+    grid = { nu: N, nv: N, points: [], colors: [] };
+    for (let iy = 0; iy <= N; iy++) for (let ix = 0; ix <= N; ix++) { const v = z[iy * (N + 1) + ix], ok = isFinite(v) && Math.abs(v) < LIM; grid.points.push([U(ix), U(iy), ok ? Z(v) : NaN]); grid.colors.push(seqColor(ok ? (v - lo) / (hi - lo) : 0)); }
     for (let iy = 0; iy < N; iy++) for (let ix = 0; ix < N; ix++) {
       const a = z[iy * (N + 1) + ix], b = z[iy * (N + 1) + ix + 1], c = z[(iy + 1) * (N + 1) + ix + 1], d = z[(iy + 1) * (N + 1) + ix];
       if (!isFinite(a) || !isFinite(b) || !isFinite(c) || !isFinite(d)) continue;
@@ -288,10 +290,10 @@ export function surfaceScene(value, R, labels) {
       items.push({ quad: [[U(ix), U(iy), Z(a)], [U(ix + 1), U(iy), Z(b)], [U(ix + 1), U(iy + 1), Z(c)], [U(ix), U(iy + 1), Z(d)]], color: seqColor((mean - lo) / (hi - lo)) });
     }
   }
-  return { items, labels: Object.assign({ range: lo <= hi ? 'height ' + fmt(lo) + ' to ' + fmt(hi) : 'No real values with these settings.' }, labels), lo, hi };
+  return { items, grid, labels: Object.assign({ range: lo <= hi ? 'height ' + fmt(lo) + ' to ' + fmt(hi) : 'No real values with these settings.' }, labels), lo, hi };
 }
-export function parametricSurfaceScene(point, ranges, labels) {
-  const NU = 40, NV = 28, pts = []; let ext = 0;
+export function parametricSurfaceScene(point, ranges, labels, res) {
+  const NU = res ? res[0] : 40, NV = res ? res[1] : 28, pts = []; let ext = 0;
   for (let iv = 0; iv <= NV; iv++) for (let iu = 0; iu <= NU; iu++) {
     const p = point(ranges[0][0] + (ranges[0][1] - ranges[0][0]) * iu / NU, ranges[1][0] + (ranges[1][1] - ranges[1][0]) * iv / NV);
     pts.push(p); for (const c of p) if (isFinite(c) && Math.abs(c) < LIM) ext = Math.max(ext, Math.abs(c));
@@ -308,7 +310,8 @@ export function parametricSurfaceScene(point, ranges, labels) {
     const zm = (q[0][2] + q[1][2] + q[2][2] + q[3][2]) / 4 / ext;
     items.push({ quad: q.map(n), color: seqColor(0.12 + 0.8 * (zm + 1) / 2), shade: 0.62 + 0.38 * light });
   }
-  return { items, labels: Object.assign({ range: 'extent ±' + fmt(ext) }, labels) };
+  const grid = { nu: NU, nv: NV, points: pts.map(n), colors: pts.map((p) => seqColor(0.12 + 0.8 * ((isFinite(p[2]) ? p[2] / ext : 0) + 1) / 2)) };
+  return { items, grid, labels: Object.assign({ range: 'extent ±' + fmt(ext) }, labels) };
 }
 export function spaceCurveScene(point, range, labels) {
   const N = 400, pts = [], ext = [0, 0, 0];
@@ -321,7 +324,7 @@ export function spaceCurveScene(point, range, labels) {
     if (a.concat(b).some((c) => !isFinite(c))) continue;
     items.push({ seg: [n(a), n(b)], color: seqColor(0.1 + 0.8 * i / N), width: 2.2 });
   }
-  return { items, labels: Object.assign({ range: 'x ±' + fmt(sc[0]) + ', y ±' + fmt(sc[1]) + ', z ±' + fmt(sc[2]) }, labels) };
+  return { items, path: pts.map(n), pathColor: (t) => seqColor(0.1 + 0.8 * t), labels: Object.assign({ range: 'x ±' + fmt(sc[0]) + ', y ±' + fmt(sc[1]) + ', z ±' + fmt(sc[2]) }, labels) };
 }
 export function fieldScene(vector, R, labels) {
   const K = 5, vs = []; let maxMag = 0;

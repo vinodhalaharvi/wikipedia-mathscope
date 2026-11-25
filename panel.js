@@ -37,6 +37,21 @@ const st = { item: null, view: null, vi: 0, params: {}, axes: [], range: 6, mode
   showD: true, hover: null, geom: null, f: null, df: null, dKind: '', xs: [], series: [] };
 const canvas = $('#ms-canvas'), plot = $('#ms-plot');
 const view3d = new View3D(canvas, plot);
+const canvas3d = $('#ms-canvas3d');
+/* WebGL view, loaded on demand. If it cannot start, the plain-canvas View3D keeps working. */
+let gl = null;
+import('./plots3d.js').then((m) => {
+  try { gl = new m.GLView(canvas3d, plot, cssVar); gl.onLost = () => { gl = null; if (st.view) render(); }; }
+  catch (err) { gl = null; }
+  if (st.view) render();
+}).catch(() => { gl = null; });
+let is3d = false;
+function show3d(scene) {
+  is3d = true;
+  if (gl && gl.ok) { canvas.hidden = true; canvas3d.hidden = false; view3d.active = false; gl.setScene(scene); }
+  else { canvas3d.hidden = true; canvas.hidden = false; view3d.active = true; view3d.setScene(scene); }
+  $('#ms-readout').textContent = (gl && gl.ok ? 'Drag to rotate, scroll to zoom. ' : 'Drag to rotate. ') + ((scene.labels && scene.labels.range) || '');
+}
 
 /* ------------------------------------------------------------------ messages */
 window.addEventListener('message', (ev) => {
@@ -236,12 +251,12 @@ function legend() {
     lab.appendChild(cb); lab.appendChild(el('span', 'swatch d')); lab.appendChild(document.createTextNode('Derivative'));
     box.appendChild(lab);
   } else if (v.kind === 'complex') { box.appendChild(sw('', 'Real part')); box.appendChild(sw('d', 'Imaginary part')); }
-  else if (v.kind === 'surface') box.appendChild(note(st.mode === 'map' ? 'Colour shows the value. White lines join equal values.' : 'Height and colour show the value. Drag to rotate.'));
+  else if (v.kind === 'surface') box.appendChild(note(st.mode === 'map' ? 'Colour shows the value. White lines join equal values.' : 'Height and colour show the value.'));
   else if (v.kind === 'implicit') box.appendChild(note('The line marks where the two sides are equal.'));
   else if (v.kind === 'field2d') box.appendChild(note('Arrows show direction. Longer means stronger.'));
-  else if (v.kind === 'field3d') box.appendChild(note('Brighter, longer arrows are stronger. Drag to rotate.'));
+  else if (v.kind === 'field3d') box.appendChild(note('Brighter, longer arrows are stronger.'));
   else if (v.kind === 'pcurve' && v.dims === 2) box.appendChild(note('The curve traced as ' + plainSym(st.axes[0]) + ' runs through its range.'));
-  else box.appendChild(note('Drag to rotate.'));
+  else box.appendChild(note(v.kind === 'psurface' ? 'Colour shows height.' : 'Colour runs from the start of the curve to its end.'));
   $('#ms-readout').textContent = hint();
 }
 function hint() {
@@ -264,7 +279,8 @@ function render() {
   const v = st.view;
   if (!v) return;
   const kind = v.kind, R = st.range, env = Object.assign({}, st.params);
-  view3d.active = false;
+  view3d.active = false; is3d = false;
+  const hi = gl && gl.ok;                        // finer meshes when the graphics card draws them
   if (kind === 'curve' || kind === 'complex') {
     const n = 400, x = st.axes[0];
     st.xs = new Array(n + 1); const a = new Array(n + 1), b = new Array(n + 1);
@@ -283,8 +299,7 @@ function render() {
     const [x, y] = st.axes, f = st.f;
     const value = (xv, yv) => { env[x] = xv; env[y] = yv; return f(env); };
     if (kind === 'surface' && st.mode === '3d') {
-      view3d.active = true;
-      view3d.setScene(surfaceScene(value, R, { x: plainSym(x), y: plainSym(y), z: 'value' }));
+      show3d(surfaceScene(value, R, { x: plainSym(x), y: plainSym(y), z: 'value' }, hi ? 90 : 34));
       canvas.setAttribute('aria-label', 'Three-dimensional surface over ' + plainSym(x) + ' and ' + plainSym(y) + '.');
     } else {
       st.geom = drawMap(canvas, plot, { R, value, zeroOnly: kind === 'implicit', xLabel: plainSym(x), yLabel: plainSym(y), hover: st.hover });
@@ -309,8 +324,7 @@ function render() {
       const d = (pair, c) => (pair[0][c] - pair[1][c]) / (2 * h);
       return [d(dy, 2) - d(dz, 1), d(dz, 0) - d(dx, 2), d(dx, 1) - d(dy, 0)];
     };
-    view3d.active = true;
-    view3d.setScene(fieldScene(st.show3 === 'curl' ? curl : F, R, { x: plainSym(x), y: plainSym(y), z: plainSym(z) }));
+    show3d(fieldScene(st.show3 === 'curl' ? curl : F, R, { x: plainSym(x), y: plainSym(y), z: plainSym(z) }));
     canvas.setAttribute('aria-label', 'Three-dimensional vector field.');
   } else if (kind === 'pcurve') {
     const t = st.axes[0], rng = paramRange(t, null), fs = v.fs;
@@ -319,18 +333,17 @@ function render() {
       for (let i = 0; i <= 500; i++) { env[t] = rng[0] + (rng[1] - rng[0]) * i / 500; pts.push([fs[0](env), fs[1](env)]); }
       drawPath(canvas, plot, pts, { x: 'x', y: 'y' });
     } else {
-      view3d.active = true;
       const long = [rng[0], rng[0] + (rng[1] - rng[0]) * (rng[0] === 0 ? 3 : 1)];      // three turns for a space curve
-      view3d.setScene(spaceCurveScene((tv) => { env[t] = tv; return [fs[0](env), fs[1](env), fs[2](env)]; }, long, { x: 'x', y: 'y', z: 'z' }));
+      show3d(spaceCurveScene((tv) => { env[t] = tv; return [fs[0](env), fs[1](env), fs[2](env)]; }, long, { x: 'x', y: 'y', z: 'z' }));
     }
     canvas.setAttribute('aria-label', 'Curve traced by ' + plainSym(t) + '.');
   } else if (kind === 'psurface') {
     const [u, w] = st.axes, fs = v.fs;
-    view3d.active = true;
-    view3d.setScene(parametricSurfaceScene((uv, wv) => { env[u] = uv; env[w] = wv; return [fs[0](env), fs[1](env), fs[2](env)]; },
-      [paramRange(u, w), paramRange(w, u)], { x: 'x', y: 'y', z: 'z' }));
+    show3d(parametricSurfaceScene((uv, wv) => { env[u] = uv; env[w] = wv; return [fs[0](env), fs[1](env), fs[2](env)]; },
+      [paramRange(u, w), paramRange(w, u)], { x: 'x', y: 'y', z: 'z' }, hi ? [96, 64] : null));
     canvas.setAttribute('aria-label', 'Surface swept by ' + plainSym(u) + ' and ' + plainSym(w) + '.');
   }
+  if (!is3d) { canvas3d.hidden = true; canvas.hidden = false; }
   canvas.style.cursor = view3d.active ? 'grab' : 'crosshair';
 }
 
@@ -392,7 +405,7 @@ canvas.addEventListener('pointermove', pointer);
 canvas.addEventListener('pointerleave', (ev) => {
   if (ev.pointerType === 'mouse' && st.view && !view3d.active && st.hover !== null) { st.hover = null; $('#ms-readout').textContent = hint(); render(); }
 });
-new ResizeObserver(() => { if (st.view) render(); }).observe(plot);
+new ResizeObserver(() => { if (!st.view) return; if (is3d && gl && gl.ok) gl.resize(); else render(); }).observe(plot);
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (st.view) render(); });
 
 send({ type: 'ready' });
