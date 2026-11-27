@@ -125,7 +125,7 @@ export function drawMap(canvas, wrap, opts) {
   const wide = wrap.clientWidth;
   const side = Math.max(160, Math.min(wide - 46 - 58, 300));
   const s = setup(canvas, wrap, side + 40); if (!s) return null;
-  const { ctx } = s, m = { l: 46, t: 10 }, R = opts.R, N = 72;
+  const { ctx } = s, m = { l: 46, t: 10 }, R = opts.R, N = opts.N || 72;
   const cGrid = cssVar('--grid'), cMuted = cssVar('--muted'), cInk = cssVar('--ink'), cAcc = cssVar('--series-1');
   const X = (ix) => m.l + (ix / N) * side, Y = (iy) => m.t + side - (iy / N) * side;
   let lo = Infinity, hi = -Infinity, g = null;

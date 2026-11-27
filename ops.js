@@ -54,6 +54,19 @@ export function toLatex(engine, json) {
   } catch (err) { return ''; }
 }
 
+/* Milliseconds for one evaluation of a tree, measured briefly with every symbol set to 1. */
+export function costOf(json, ctx) {
+  let f;
+  try { f = compileJson(json, ctx); } catch (err) { return Infinity; }
+  const env = { __terms: 20, __order: 3, __center: 0 };
+  collectSymbols(json, new Set(), ctx).forEach((s) => { env[s] = 1; });
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const t0 = now(); let n = 0;
+  while (n < 400) { f(env); n++; if ((n & 7) === 0 && now() - t0 > 25) break; }
+  return Math.max(1e-4, (now() - t0) / n);
+}
+const SLOW = 'This would take too long to work out: the formula already contains a sum or an integral that is slow to evaluate.';
+
 function nameOf(view) { return view.nameLatex || view.fnTex || view.lhsLatex || 'f'; }
 function symbolsOf(trees, ctx) {
   const set = new Set();
@@ -108,15 +121,20 @@ export function applyOperator(engine, view, id, axes) {
         note: d.symbolic ? '' : 'Estimated numerically.' });
     }
     if (id === 'integral') {
-      const t = 'ms_t';
-      const tree = ['NumInt', substitute(json, { [x]: t }), t, 0, x, 120];
+      const t = 'ms_t', each = costOf(json, ctx);                    // 200 points on screen, each an integral
+      const steps = Math.floor(350 / (200 * each));
+      if (steps < 24) return { error: SLOW };
+      const tree = ['NumInt', substitute(json, { [x]: t }), t, 0, x, Math.min(120, steps - (steps % 2))];
       return scalar('curve', engine, view, tree, false, { variable: x, declared: [x], title: 'Integral', nameLatex: '\\int_{0}^{' + xl + '}' + name + '\\,d' + xl,
         note: 'Area from 0 up to each point, added up numerically.' });
     }
     if (id === 'fourier') {
       const t = 'ms_t', w = freshSymbol(view.unknowns, ['omega', 'k', 'xi', 'nu']);
-      const body = substitute(json, { [x]: t });
-      const part = (trig) => ['Power', ['NumInt', ['Multiply', body, [trig, ['Multiply', w, t]]], t, -10, 10, 600], 2];
+      const body = substitute(json, { [x]: t }), each = costOf(json, ctx);
+      const budget = Math.floor(400 / (160 * 2 * each));              // 160 points, two integrals each
+      if (budget < 160) return { error: SLOW };
+      const steps = Math.min(600, budget - (budget % 2));
+      const part = (trig) => ['Power', ['NumInt', ['Multiply', body, [trig, ['Multiply', w, t]]], t, -10, 10, steps], 2];
       const tree = ['Sqrt', ['Add', part('Cos'), part('Sin')]];
       return scalar('curve', engine, view, tree, false, { variable: w, declared: [w], heavy: true, title: 'Fourier spectrum', nameLatex: '\\left|\\mathcal{F}\\left[' + name + '\\right]\\right|',
         note: 'How strongly each frequency is present. Computed from the function between −10 and 10.' });

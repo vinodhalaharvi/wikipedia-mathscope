@@ -269,9 +269,19 @@ export function collectSymbols(j, set, ctx, bound) {
   return set;
 }
 /* A sum whose terms never mention the counting variable is a sum over indexed data (x_i). */
+function indexedBy(j, v) {
+  if (typeof j === 'string') {
+    const parts = j.split('_');
+    return parts.length > 1 && parts.slice(1).some((p) => p === v || new RegExp('(^|[^A-Za-z])' + v + '([^A-Za-z]|$)').test(p));
+  }
+  if (!Array.isArray(j)) return false;
+  if (j[0] === 'Subscript' && mentions(j[2], v)) return true;
+  for (let i = 1; i < j.length; i++) if (indexedBy(j[i], v)) return true;
+  return false;
+}
 function sumOverIndexed(j) {
   if (!Array.isArray(j)) return false;
-  if (j[0] === 'Sum' || j[0] === 'Product') { const v = boundVar(j); if (!v || !mentions(j[1], v)) return true; }
+  if (j[0] === 'Sum' || j[0] === 'Product') { const v = boundVar(j); if (!v || !mentions(j[1], v) || indexedBy(j[1], v)) return true; }
   for (let i = 1; i < j.length; i++) if (sumOverIndexed(j[i])) return true;
   return false;
 }
@@ -540,7 +550,7 @@ function scalarView(ce, lhs, rhsTex, table) {
   const base = { json, rhsJson: json, lhsLatex: lhs.lhsLatex, fnTex: lhs.fnTex, declared: lhs.declared, lhsSym: lhs.lhsSym, ctx };
   if (containsHead(json, ['Limit', 'D', 'Derivative', 'PartialDerivative'])) return none('This contains a limit or a derivative', base);
   if (typeof json === 'string') return none('This only renames a symbol', base);
-  if (sumOverIndexed(json)) return none('This adds up indexed quantities such as x_i, which have no values here', base);
+  if (sumOverIndexed(json)) return none('This adds up indexed quantities such as x_i or a_n, which have no values here', base);
   const unknowns = Array.from(collectSymbols(json, new Set(), ctx)).sort();
   base.unknowns = unknowns;
   base.usesTerms = infiniteSum(json) || Array.from(ctx.fns.keys()).some((id) => mentions(json, id) && infiniteSum(ctx.fns.get(id).json));

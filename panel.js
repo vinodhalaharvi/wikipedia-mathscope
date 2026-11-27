@@ -5,7 +5,7 @@
 import { ComputeEngine } from './vendor/compute-engine/compute-engine.js';
 import { splitParts, buildFunctionTable, analyseFormula, compileJson, compileComplex, scoped, defaultValue, locationLike,
   plainSym, symLatex, fmt, KIND_LABEL, DEFAULT_TERMS } from './math.js';
-import { operatorsFor, applyOperator, differentiate, toLatex } from './ops.js';
+import { operatorsFor, applyOperator, differentiate, toLatex, costOf } from './ops.js';
 import { cssVar, drawCurve, drawMap, drawPath, View3D, surfaceScene, parametricSurfaceScene, spaceCurveScene, fieldScene } from './plots.js';
 
 const $ = (s, r) => (r || document).querySelector(s);
@@ -265,6 +265,7 @@ function prepare(full) {
     st.ref = v.refJson !== undefined ? compileJson(v.refJson, v.ctx) : null;
     const x = st.axes[0];
     const d = differentiate(engine, v.rhsJson, x, v.ctx);
+    st.dJson = d ? d.json : null;
     let latex = '';
     if (d) { st.df = compileJson(d.json, v.ctx); st.dKind = d.symbolic ? 'symbolic' : 'numeric'; latex = d.symbolic ? toLatex(engine, d.json) : ''; }
     else { st.df = () => NaN; st.dKind = 'none'; }
@@ -278,7 +279,20 @@ function prepare(full) {
   } else if (kind === 'surface' || kind === 'implicit') {
     st.f = compileJson(v.rhsJson, v.ctx);
   }
+  st.cost = v.rhsJson !== undefined ? costOf(v.rhsJson, v.ctx) : 0.001;      // ms per evaluation
+  if (kind === 'curve') st.cost += (st.dJson !== null && st.dJson !== undefined ? costOf(st.dJson, v.ctx) : 0) + (v.refJson !== undefined ? costOf(v.refJson, v.ctx) : 0);
 }
+
+/* How many points can be drawn without freezing the panel. `per` is the time for one
+   point in milliseconds; the budget is about a quarter of a second per redraw. */
+function affordable(per, most, least) { return Math.max(least, Math.min(most, Math.floor(260 / per))); }
+function tooSlow(per, least) { return per * least > 4000; }
+function slowNotice() {
+  const s = setupBlank();
+  $('#ms-readout').textContent = 'This one is too slow to draw: each point needs a long sum or integral.';
+  return s;
+}
+function setupBlank() { canvas3d.hidden = true; canvas.hidden = false; const c = canvas.getContext('2d'); c.clearRect(0, 0, canvas.width, canvas.height); }
 
 function legend() {
   const v = st.view, box = $('#ms-legend'); box.textContent = '';
@@ -325,14 +339,17 @@ function render() {
   const hi = gl && gl.ok;                        // finer meshes when the graphics card draws them
   $('#ms-numbers').hidden = kind !== 'curve';
   if (kind === 'curve' || kind === 'complex') {
-    const n = v.heavy ? 160 : 400, x = st.axes[0];
+    if (tooSlow(st.cost, 40)) { slowNotice(); return; }
+    const n = affordable(st.cost, v.heavy ? 160 : 400, 40), x = st.axes[0];
     st.xs = new Array(n + 1); const a = new Array(n + 1), b = new Array(n + 1), c = st.ref ? new Array(n + 1) : null;
     const needD = kind === 'curve' && (st.showD || !v.heavy);          // the slope also feeds the numbers line
+    const began = performance.now();
     for (let i = 0; i <= n; i++) {
       const xv = -R + (2 * R * i) / n; env[x] = xv; st.xs[i] = xv;
       if (kind === 'curve') { a[i] = st.f(env); b[i] = needD ? st.df(env) : NaN; if (c) c[i] = st.ref(env); }
       else { const z = st.f(env); a[i] = z[0]; b[i] = z[1]; }
     }
+    st.cost = Math.max(1e-4, (performance.now() - began) / (n + 1));   // learn the real cost, so the next redraw fits the budget
     st.series = [{ ys: a, color: cssVar('--series-1') }]; st.fns = [st.f];
     if (kind === 'complex') { st.series.push({ ys: b, color: cssVar('--series-2'), dash: [6, 4] }); }
     else if (st.showD && st.dKind !== 'none') { st.series.push({ ys: b, color: cssVar('--series-2'), dash: [6, 4] }); st.fns.push(st.df); }
@@ -346,11 +363,13 @@ function render() {
   } else if (kind === 'surface' || kind === 'implicit') {
     const [x, y] = st.axes, f = st.f;
     const value = (xv, yv) => { env[x] = xv; env[y] = yv; return f(env); };
+    if (tooSlow(st.cost, 16 * 16)) { slowNotice(); return; }
+    const grid = Math.max(16, Math.min(90, Math.floor(Math.sqrt(300 / st.cost))));
     if (kind === 'surface' && st.mode === '3d') {
-      show3d(surfaceScene(value, R, { x: plainSym(x), y: plainSym(y), z: 'value' }, hi ? 90 : 34));
+      show3d(surfaceScene(value, R, { x: plainSym(x), y: plainSym(y), z: 'value' }, Math.min(grid, hi ? 90 : 34)));
       canvas.setAttribute('aria-label', 'Three-dimensional surface over ' + plainSym(x) + ' and ' + plainSym(y) + '.');
     } else {
-      st.geom = drawMap(canvas, plot, { R, value, zeroOnly: kind === 'implicit', xLabel: plainSym(x), yLabel: plainSym(y), hover: st.hover });
+      st.geom = drawMap(canvas, plot, { R, value, zeroOnly: kind === 'implicit', xLabel: plainSym(x), yLabel: plainSym(y), hover: st.hover, N: Math.min(72, grid) });
       if (kind === 'surface' && st.geom && st.geom.constant !== undefined && st.hover === null) $('#ms-readout').textContent = 'The value is the same everywhere: ' + fmt(st.geom.constant) + '.';
       canvas.setAttribute('aria-label', (kind === 'implicit' ? 'Curve' : 'Map of values') + ' over ' + plainSym(x) + ' and ' + plainSym(y) + ', each from ' + fmt(-R) + ' to ' + fmt(R) + '.');
     }
