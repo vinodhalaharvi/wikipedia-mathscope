@@ -187,14 +187,17 @@
       mark.setAttribute('role', 'button'); mark.setAttribute('tabindex', '0');
       return;
     }
-    const pill = document.createElement('button');
+    const anchor = eq.block && mark.localName === 'math' && mark.closest('table.ltx_equation, table.ltx_equationgroup') || mark;   // arXiv: above the whole equation row
+    /* Wikipedia's MathJax can rebuild a formula's nodes after the page loads. The rebuilt
+       formula is new to us, but its pill is already there: reuse it, never add a second. */
+    const before = anchor.previousElementSibling;
+    const pill = before && before.classList.contains('mathscope-pill') ? before : document.createElement('button');
     pill.type = 'button';
     pill.className = 'mathscope-pill' + (eq.block ? ' mathscope-pill-block' : '');
     pill.textContent = eq.label;
     pill.dataset.mathscopeId = String(eq.id);
     pill.setAttribute('aria-label', eq.label + ': open this equation in MathScope');
-    const anchor = eq.block && mark.localName === 'math' && mark.closest('table.ltx_equation, table.ltx_equationgroup') || mark;   // arXiv: above the whole equation row
-    anchor.parentNode.insertBefore(pill, anchor);
+    if (pill !== before) anchor.parentNode.insertBefore(pill, anchor);
     eq.pill = pill;
   }
   function setSelected(eq) {

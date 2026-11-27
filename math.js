@@ -612,6 +612,10 @@ function fieldView(ce, m, rhsTex) {
   const names = ['x', 'y', 'z'];
   const coords = declared.length >= 2 ? declared.slice(0, 3) : names.filter((n) => unknownSet.has(n));
   while (coords.length < 2) { const nxt = names.find((n) => coords.indexOf(n) < 0); coords.push(nxt); }
+  /* a = (a_1, a_2, a_3) lists the components of one vector. A field needs at least one
+     component that changes with position. */
+  const position = declared.length ? declared : names;
+  if (!position.some((c) => unknownSet.has(c))) return none('This lists the components of a single vector. Nothing in it changes with position, so it is not a field');
   const unknowns = Array.from(unknownSet).sort();
   const params = unknowns.filter((u) => coords.indexOf(u) < 0 && u !== 'z');
   if (params.length > 6) return none('This field has too many symbols');
